@@ -3,6 +3,7 @@ package com.calltune.app
 import android.app.*
 import android.content.*
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.IBinder
@@ -10,6 +11,7 @@ import android.telephony.TelephonyManager
 
 class CallService : Service() {
     private var player: MediaPlayer? = null
+    private var prevRinger: Int? = null
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -46,17 +48,34 @@ class CallService : Service() {
             player = MediaPlayer().apply {
                 setAudioAttributes(
                     AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
                 setDataSource(this@CallService, uri)
                 isLooping = true
                 prepare()
                 start()
             }
+            silenceRinger()
         } catch (e: Exception) { stop() }
     }
 
+    private fun silenceRinger() {
+        val nm = getSystemService(NotificationManager::class.java)
+        if (!nm.isNotificationPolicyAccessGranted) return
+        val am = getSystemService(AudioManager::class.java)
+        if (prevRinger == null) prevRinger = am.ringerMode
+        am.ringerMode = AudioManager.RINGER_MODE_SILENT
+    }
+
+    private fun restoreRinger() {
+        prevRinger?.let {
+            try { getSystemService(AudioManager::class.java).ringerMode = it } catch (_: Exception) {}
+        }
+        prevRinger = null
+    }
+
     private fun stop() {
+        restoreRinger()
         player?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
         player = null
     }

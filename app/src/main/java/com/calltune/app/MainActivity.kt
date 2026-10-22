@@ -37,6 +37,12 @@ class MainActivity : Activity() {
             }
         })
         root.addView(Button(this).apply {
+            text = "Allow Do Not Disturb access"
+            setOnClickListener {
+                startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+            }
+        })
+        root.addView(Button(this).apply {
             text = "Start CallTune"
             setOnClickListener { askPermsThenStart() }
         })
