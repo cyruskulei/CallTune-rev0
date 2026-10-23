@@ -29,7 +29,7 @@ class MainActivity : Activity() {
         }
         root.addView(numberBox)
         root.addView(Button(this).apply {
-            text = "Choose tune"
+            text = "Tune for a caller (this phone)"
             setOnClickListener { pickAudio(1) }
         })
         root.addView(TextView(this).apply {
@@ -41,7 +41,7 @@ class MainActivity : Activity() {
         }
         root.addView(myNumber)
         root.addView(Button(this).apply {
-            text = "Upload my tune to cloud"
+            text = "My tune for others (cloud)"
             setOnClickListener {
                 if (myNumber.text.isBlank())
                     Toast.makeText(this@MainActivity, "Enter your own number first", Toast.LENGTH_SHORT).show()
