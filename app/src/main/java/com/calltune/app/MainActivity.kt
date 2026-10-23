@@ -11,6 +11,7 @@ import android.widget.*
 class MainActivity : Activity() {
     private lateinit var numberBox: EditText
     private lateinit var list: TextView
+    private lateinit var myNumber: EditText
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -34,6 +35,26 @@ class MainActivity : Activity() {
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
                         Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
                 }, 1)
+            }
+        })
+        root.addView(TextView(this).apply {
+            text = "\nMy tune for people who call me / that others hear when I call:"
+        })
+        myNumber = EditText(this).apply {
+            hint = "My own phone number"; inputType = android.text.InputType.TYPE_CLASS_PHONE
+            setText(getSharedPreferences("me", MODE_PRIVATE).getString("number", ""))
+        }
+        root.addView(myNumber)
+        root.addView(Button(this).apply {
+            text = "Upload my tune to cloud"
+            setOnClickListener {
+                if (myNumber.text.isBlank()) {
+                    Toast.makeText(this@MainActivity, "Enter your own number first", Toast.LENGTH_SHORT).show()
+                } else {
+                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE); type = "audio/*"
+                    }, 3)
+                }
             }
         })
         root.addView(Button(this).apply {
@@ -66,6 +87,18 @@ class MainActivity : Activity() {
     override fun onActivityResult(req: Int, res: Int, data: Intent?) {
         super.onActivityResult(req, res, data)
         val uri = data?.data
+        if (req == 3 && res == RESULT_OK && uri != null) {
+            val num = myNumber.text.toString()
+            getSharedPreferences("me", MODE_PRIVATE).edit().putString("number", num).apply()
+            Toast.makeText(this, "Uploading...", Toast.LENGTH_SHORT).show()
+            Thread {
+                val err = Cloud.upload(this, num, uri)
+                runOnUiThread {
+                    Toast.makeText(this, err ?: "Tune uploaded", Toast.LENGTH_LONG).show()
+                }
+            }.start()
+            return
+        }
         if (req == 1 && res == RESULT_OK && uri != null) {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             TuneStore.save(this, numberBox.text.toString(), uri)

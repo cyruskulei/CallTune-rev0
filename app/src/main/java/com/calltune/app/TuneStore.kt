@@ -17,6 +17,12 @@ object TuneStore {
         prefs(c).edit().putString(key, uri.toString()).apply()
     }
 
+    fun findSpecific(c: Context, number: String): Uri? =
+        prefs(c).getString(norm(number), null)?.let { Uri.parse(it) }
+
+    fun findDefault(c: Context): Uri? =
+        prefs(c).getString("default", null)?.let { Uri.parse(it) }
+
     fun remove(c: Context, key: String) = prefs(c).edit().remove(key).apply()
 
     fun find(c: Context, number: String?): Uri? {
