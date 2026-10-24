@@ -56,7 +56,12 @@ class CallService : Service() {
             .setContentText("Playing your chosen tunes for incoming calls")
             .setSmallIcon(android.R.drawable.ic_menu_call)
             .build()
-        startForeground(1, n)
+        try {
+            startForeground(1, n)
+        } catch (e: Exception) {
+            stopSelf()
+            return
+        }
         val f = IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, f, Context.RECEIVER_EXPORTED)
         else registerReceiver(receiver, f)
