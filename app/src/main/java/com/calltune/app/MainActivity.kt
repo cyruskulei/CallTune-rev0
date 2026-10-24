@@ -60,10 +60,7 @@ class MainActivity : Activity() {
         })
         root.addView(Button(this).apply {
             text = "Stop CallTune"
-            setOnClickListener {
-                setAutostart(false)
-                stopService(Intent(this@MainActivity, CallService::class.java))
-            }
+            setOnClickListener { stopService(Intent(this@MainActivity, CallService::class.java)) }
         })
         root.addView(Button(this).apply {
             text = "Clear all tunes"
@@ -94,22 +91,14 @@ class MainActivity : Activity() {
     override fun onActivityResult(req: Int, res: Int, data: Intent?) {
         super.onActivityResult(req, res, data)
         val uri = data?.data
-        if (res != RESULT_OK || uri == null) {
-            if (req == 11 || req == 13)
-                Toast.makeText(this, "No trimmed tune came back (code $res)", Toast.LENGTH_LONG).show()
-            return
-        }
+        if (res != RESULT_OK || uri == null) return
         when (req) {
             1 -> trim(uri, 11)
             3 -> trim(uri, 13)
             11 -> {
-                val who = numberBox.text.toString()
-                TuneStore.save(this, who, uri)
+                TuneStore.save(this, numberBox.text.toString(), uri)
                 numberBox.setText("")
                 refresh()
-                Toast.makeText(this,
-                    "Saved for " + (if (who.isBlank()) "all callers" else who),
-                    Toast.LENGTH_LONG).show()
             }
             13 -> {
                 val num = myNumber.text.toString()
@@ -146,12 +135,7 @@ class MainActivity : Activity() {
         else Toast.makeText(this, "Permissions are required", Toast.LENGTH_LONG).show()
     }
 
-    private fun setAutostart(on: Boolean) {
-        getSharedPreferences("settings", MODE_PRIVATE).edit().putBoolean("autostart", on).apply()
-    }
-
     private fun start() {
-        setAutostart(true)
         startForegroundService(Intent(this, CallService::class.java))
         Toast.makeText(this, "CallTune started", Toast.LENGTH_SHORT).show()
     }
