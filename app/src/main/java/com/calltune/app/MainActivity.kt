@@ -49,6 +49,10 @@ class MainActivity : Activity() {
             }
         })
         root.addView(Button(this).apply {
+            text = "Test play my saved tune"
+            setOnClickListener { testPlay() }
+        })
+        root.addView(Button(this).apply {
             text = "Allow Do Not Disturb access"
             setOnClickListener {
                 startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
@@ -125,14 +129,38 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun testPlay() {
+        val uri = TuneStore.findDefault(this)
+            ?: TuneStore.all(this).values.firstOrNull()?.let { Uri.parse(it) }
+        if (uri == null) {
+            Toast.makeText(this, "No saved tune. Save one first.", Toast.LENGTH_LONG).show(); return
+        }
+        try {
+            val mp = android.media.MediaPlayer().apply {
+                setDataSource(this@MainActivity, uri)
+                prepare()
+                start()
+            }
+            Toast.makeText(this, "Playing for 6 seconds...", Toast.LENGTH_SHORT).show()
+            android.os.Handler(mainLooper).postDelayed({
+                try { mp.stop() } catch (_: Exception) {}
+                mp.release()
+            }, 6000)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Cannot play: ${e.javaClass.simpleName} ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun refresh() {
         val m = TuneStore.all(this)
-        val boot = getSharedPreferences("settings", MODE_PRIVATE)
-            .getString("boot_log", "none yet (restart the phone to test)")
+        val sp = getSharedPreferences("settings", MODE_PRIVATE)
+        val boot = sp.getString("boot_log", "none yet (restart the phone to test)")
         list.text = (if (m.isEmpty()) "\nNo tunes saved yet." else
             "\nSaved tunes:\n" + m.entries.joinToString("\n") {
                 "• ${if (it.key == "default") "All callers" else it.key}"
-            }) + "\n\nLast boot check: $boot"
+            }) + "\n\nLast boot check: $boot" +
+            "\nLast ring: " + sp.getString("ring_log", "none yet") +
+            "\nLast play: " + sp.getString("play_log", "none yet")
     }
 
     private fun askPermsThenStart() {

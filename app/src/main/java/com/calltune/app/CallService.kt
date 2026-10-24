@@ -15,6 +15,7 @@ import android.telephony.TelephonyManager
 class CallService : Service() {
     private var player: MediaPlayer? = null
     private var prevRinger: Int? = null
+    private var prevMedia: Int? = null
     @Volatile private var ringing = false
     private val main = Handler(Looper.getMainLooper())
 
@@ -32,7 +33,13 @@ class CallService : Service() {
         }
     }
 
+    private fun note(key: String, msg: String) {
+        val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        getSharedPreferences("settings", MODE_PRIVATE).edit().putString(key, "$t $msg").apply()
+    }
+
     private fun handleRing(ctx: Context, number: String?) {
+        note("ring_log", "ring, number=" + (number ?: "NOT PROVIDED"))
         val specific = number?.let { if (it.isBlank()) null else TuneStore.findSpecific(ctx, it) }
         if (specific != null) { play(specific); return }
         val default = TuneStore.findDefault(ctx)
@@ -80,8 +87,13 @@ class CallService : Service() {
                 prepare()
                 start()
             }
+            note("play_log", "playing OK: $uri")
             silenceRinger()
-        } catch (e: Exception) { stop() }
+            raiseVolume()
+        } catch (e: Exception) {
+            note("play_log", "FAILED: ${e.javaClass.simpleName} ${e.message}")
+            stop()
+        }
     }
 
     private fun silenceRinger() {
@@ -90,6 +102,24 @@ class CallService : Service() {
         val am = getSystemService(AudioManager::class.java)
         if (prevRinger == null) prevRinger = am.ringerMode
         am.ringerMode = AudioManager.RINGER_MODE_SILENT
+    }
+
+    private fun raiseVolume() {
+        try {
+            val am = getSystemService(AudioManager::class.java)
+            if (prevMedia == null) prevMedia = am.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val target = (am.getStreamMaxVolume(AudioManager.STREAM_MUSIC) * 0.8).toInt()
+            if (target > (prevMedia ?: 0))
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+        } catch (_: Exception) {}
+    }
+
+    private fun restoreVolume() {
+        prevMedia?.let {
+            try { getSystemService(AudioManager::class.java).setStreamVolume(AudioManager.STREAM_MUSIC, it, 0) }
+            catch (_: Exception) {}
+        }
+        prevMedia = null
     }
 
     private fun restoreRinger() {
@@ -101,6 +131,7 @@ class CallService : Service() {
 
     private fun stop() {
         restoreRinger()
+        restoreVolume()
         player?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
         player = null
     }
