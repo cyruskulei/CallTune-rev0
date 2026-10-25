@@ -160,7 +160,8 @@ class MainActivity : Activity() {
                 "• ${if (it.key == "default") "All callers" else it.key}"
             }) + "\n\nLast boot check: $boot" +
             "\nLast ring: " + sp.getString("ring_log", "none yet") +
-            "\nLast play: " + sp.getString("play_log", "none yet")
+            "\nLast play: " + sp.getString("play_log", "none yet") +
+            "\nService: " + sp.getString("svc_log", "none yet")
     }
 
     private fun askPermsThenStart() {

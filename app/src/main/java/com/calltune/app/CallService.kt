@@ -41,7 +41,7 @@ class CallService : Service() {
                     val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
                     handleRing(context, number)
                 }
-                else -> { ringing = false; stop() } // answered or ended
+                else -> { ringing = false; handledFor = null; fetching = null; stop() } // answered or ended
             }
         }
     }
@@ -51,23 +51,57 @@ class CallService : Service() {
         getSharedPreferences("settings", MODE_PRIVATE).edit().putString(key, "$t $msg").apply()
     }
 
+    private var pendingDefault: Runnable? = null
+    private var handledFor: String? = null
+    private var fetching: String? = null
+
     private fun handleRing(ctx: Context, number: String?) {
         note("ring_log", "ring, number=" + (number ?: "NOT PROVIDED"))
         val specific = number?.let { if (it.isBlank()) null else TuneStore.findSpecific(ctx, it) }
-        if (specific != null) { play(specific); return }
+        if (specific != null) {
+            if (handledFor != number) { handledFor = number; play(specific) }
+            return
+        }
         val default = TuneStore.findDefault(ctx)
-        if (number.isNullOrBlank()) { default?.let { play(it) }; return }
+        if (number.isNullOrBlank()) {
+            // The number may arrive in a second broadcast. Wait briefly, then fall back to the default tune.
+            pendingDefault?.let { main.removeCallbacks(it) }
+            val r = Runnable {
+                if (ringing && isRinging() && player == null && default != null) {
+                    note("play_log", "no number received, using default tune")
+                    play(default)
+                }
+            }
+            pendingDefault = r
+            main.postDelayed(r, 1500)
+            return
+        }
+        pendingDefault?.let { main.removeCallbacks(it) }
+        if (handledFor == number || fetching == number) return
         val cached = Cloud.cachedFile(ctx, number)
-        val first = if (cached != null) Uri.fromFile(cached) else default
-        first?.let { play(it) }
+        if (cached != null) {
+            handledFor = number
+            play(Uri.fromFile(cached))
+            Thread { Cloud.fetch(ctx, number) }.start() // refresh for next time
+            return
+        }
+        fetching = number
         Thread {
             val f = Cloud.fetch(ctx, number)
-            if (f != null && cached == null) main.post { if (ringing && isRinging()) play(Uri.fromFile(f)) }
+            main.post {
+                fetching = null
+                if (ringing && isRinging()) {
+                    val u = f?.let { Uri.fromFile(it) } ?: default
+                    if (u != null) { handledFor = number; play(u) }
+                    else note("play_log", "no tune found for $number")
+                }
+            }
         }.start()
     }
 
     override fun onCreate() {
         super.onCreate()
+        note("svc_log", "service started")
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel("ct", "CallTune", NotificationManager.IMPORTANCE_LOW))
@@ -153,6 +187,7 @@ class CallService : Service() {
     }
 
     override fun onDestroy() {
+        note("svc_log", "service stopped")
         stop()
         try { unregisterReceiver(receiver) } catch (_: Exception) {}
         super.onDestroy()
