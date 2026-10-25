@@ -19,6 +19,19 @@ class CallService : Service() {
     @Volatile private var ringing = false
     private val main = Handler(Looper.getMainLooper())
 
+    private fun isRinging(): Boolean = try {
+        @Suppress("DEPRECATION")
+        getSystemService(TelephonyManager::class.java).callState == TelephonyManager.CALL_STATE_RINGING
+    } catch (e: Exception) { true }
+
+    /** Safety net: stops the tune as soon as the phone is no longer ringing. */
+    private val watch = object : Runnable {
+        override fun run() {
+            if (player == null) return
+            if (!isRinging()) { ringing = false; stop() } else main.postDelayed(this, 300)
+        }
+    }
+
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.getStringExtra(TelephonyManager.EXTRA_STATE)) {
@@ -49,7 +62,7 @@ class CallService : Service() {
         first?.let { play(it) }
         Thread {
             val f = Cloud.fetch(ctx, number)
-            if (f != null && cached == null) main.post { if (ringing) play(Uri.fromFile(f)) }
+            if (f != null && cached == null) main.post { if (ringing && isRinging()) play(Uri.fromFile(f)) }
         }.start()
     }
 
@@ -88,6 +101,8 @@ class CallService : Service() {
                 start()
             }
             note("play_log", "playing OK: $uri")
+            main.removeCallbacks(watch)
+            main.postDelayed(watch, 300)
             silenceRinger()
             raiseVolume()
         } catch (e: Exception) {
@@ -130,6 +145,7 @@ class CallService : Service() {
     }
 
     private fun stop() {
+        main.removeCallbacks(watch)
         restoreRinger()
         restoreVolume()
         player?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
