@@ -13,6 +13,7 @@ class MainActivity : Activity() {
     private lateinit var numberBox: EditText
     private lateinit var myNumber: EditText
     private lateinit var list: TextView
+    private lateinit var modeBtn: Button
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -48,6 +49,16 @@ class MainActivity : Activity() {
                 else pickAudio(3)
             }
         })
+        modeBtn = Button(this).apply {
+            setOnClickListener {
+                val sp = getSharedPreferences("settings", MODE_PRIVATE)
+                val next = if (sp.getString("mode", "free") == "free") "pro" else "free"
+                sp.edit().putString("mode", next).apply()
+                updateModeText()
+            }
+        }
+        root.addView(modeBtn)
+        updateModeText()
         root.addView(Button(this).apply {
             text = "Test play my saved tune"
             setOnClickListener { testPlay() }
@@ -127,6 +138,12 @@ class MainActivity : Activity() {
                 }.start()
             }
         }
+    }
+
+    private fun updateModeText() {
+        val free = getSharedPreferences("settings", MODE_PRIVATE).getString("mode", "free") == "free"
+        modeBtn.text = if (free) "Mode: FREE (plays my own tune). Tap to switch"
+                       else "Mode: PRO (plays the caller's tune). Tap to switch"
     }
 
     private fun testPlay() {

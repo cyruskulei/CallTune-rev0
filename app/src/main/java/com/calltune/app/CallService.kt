@@ -63,6 +63,16 @@ class CallService : Service() {
             return
         }
         val default = TuneStore.findDefault(ctx)
+        val mode = getSharedPreferences("settings", MODE_PRIVATE).getString("mode", "free")
+        if (mode == "free") {
+            // Free mode: only the receiver's own tune plays. No waiting, no cloud.
+            if (specific != null) {
+                if (handledFor != number) { handledFor = number; play(specific) }
+            } else if (player == null && default != null) {
+                play(default)
+            }
+            return
+        }
         if (number.isNullOrBlank()) {
             // The number may arrive in a second broadcast. Wait briefly, then fall back to the default tune.
             pendingDefault?.let { main.removeCallbacks(it) }
