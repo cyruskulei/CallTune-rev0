@@ -14,6 +14,7 @@ class MainActivity : Activity() {
     private lateinit var myNumber: EditText
     private lateinit var list: TextView
     private lateinit var modeBtn: Button
+    private lateinit var silenceBtn: Button
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -58,7 +59,29 @@ class MainActivity : Activity() {
             }
         }
         root.addView(modeBtn)
+        silenceBtn = Button(this).apply {
+            setOnClickListener {
+                val sp = getSharedPreferences("settings", MODE_PRIVATE)
+                sp.edit().putBoolean("silence_ringer", !sp.getBoolean("silence_ringer", false)).apply()
+                updateModeText()
+            }
+        }
+        root.addView(silenceBtn)
         updateModeText()
+        root.addView(Button(this).apply {
+            text = "Fix my sound (set ringer back to Sound)"
+            setOnClickListener {
+                try {
+                    getSystemService(android.media.AudioManager::class.java).ringerMode =
+                        android.media.AudioManager.RINGER_MODE_NORMAL
+                    Toast.makeText(this@MainActivity, "Ringer set to Sound", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    Toast.makeText(this@MainActivity,
+                        "Could not change it. Use the volume key, or allow Do Not Disturb access.",
+                        Toast.LENGTH_LONG).show()
+                }
+            }
+        })
         root.addView(Button(this).apply {
             text = "Test play my saved tune"
             setOnClickListener { testPlay() }
@@ -141,6 +164,9 @@ class MainActivity : Activity() {
     }
 
     private fun updateModeText() {
+        val on = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("silence_ringer", false)
+        silenceBtn.text = if (on) "Silence normal ringtone: ON (tap to switch)"
+                          else "Silence normal ringtone: OFF (tap to switch)"
         val free = getSharedPreferences("settings", MODE_PRIVATE).getString("mode", "free") == "free"
         modeBtn.text = if (free) "Mode: FREE (plays my own tune). Tap to switch"
                        else "Mode: PRO (plays the caller's tune). Tap to switch"
@@ -178,7 +204,8 @@ class MainActivity : Activity() {
             }) + "\n\nLast boot check: $boot" +
             "\nLast ring: " + sp.getString("ring_log", "none yet") +
             "\nLast play: " + sp.getString("play_log", "none yet") +
-            "\nService: " + sp.getString("svc_log", "none yet")
+            "\nService: " + sp.getString("svc_log", "none yet") +
+            "\nRinger: " + sp.getString("ringer_log", "none yet")
     }
 
     private fun askPermsThenStart() {

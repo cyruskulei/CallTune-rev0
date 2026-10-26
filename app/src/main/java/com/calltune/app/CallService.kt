@@ -156,6 +156,8 @@ class CallService : Service() {
     }
 
     private fun silenceRinger() {
+        // Only touch the phone's ringer if the user switched this option on.
+        if (!getSharedPreferences("settings", MODE_PRIVATE).getBoolean("silence_ringer", false)) return
         val nm = getSystemService(NotificationManager::class.java)
         if (!nm.isNotificationPolicyAccessGranted) return
         val am = getSystemService(AudioManager::class.java)
@@ -189,9 +191,12 @@ class CallService : Service() {
         val sp = getSharedPreferences("settings", MODE_PRIVATE)
         if (!sp.getBoolean("silenced_by_us", false)) return
         try {
-            getSystemService(AudioManager::class.java).ringerMode =
-                sp.getInt("orig_ringer", AudioManager.RINGER_MODE_NORMAL)
-        } catch (_: Exception) {}
+            val m = sp.getInt("orig_ringer", AudioManager.RINGER_MODE_NORMAL)
+            getSystemService(AudioManager::class.java).ringerMode = m
+            note("ringer_log", "restored ringer to mode $m")
+        } catch (e: Exception) {
+            note("ringer_log", "restore FAILED: ${e.javaClass.simpleName}")
+        }
         sp.edit().putBoolean("silenced_by_us", false).apply()
     }
 
