@@ -205,7 +205,8 @@ class MainActivity : Activity() {
             "\nLast ring: " + sp.getString("ring_log", "none yet") +
             "\nLast play: " + sp.getString("play_log", "none yet") +
             "\nService: " + sp.getString("svc_log", "none yet") +
-            "\nRinger: " + sp.getString("ringer_log", "none yet")
+            "\nRinger: " + sp.getString("ringer_log", "none yet") +
+            "\nStop: " + sp.getString("stop_log", "none yet")
     }
 
     private fun askPermsThenStart() {

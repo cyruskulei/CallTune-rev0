@@ -27,7 +27,7 @@ class CallService : Service() {
     private val watch = object : Runnable {
         override fun run() {
             if (player == null) return
-            if (!isRinging()) { ringing = false; stop() } else main.postDelayed(this, 300)
+            if (!isRinging()) { note("stop_log", "stopped: watcher saw call no longer ringing"); ringing = false; stop() } else main.postDelayed(this, 300)
         }
     }
 
@@ -40,7 +40,16 @@ class CallService : Service() {
                     val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
                     handleRing(context, number)
                 }
-                else -> { ringing = false; handledFor = null; fetching = null; stop() } // answered or ended
+                else -> {
+                    // Dual-SIM phones send extra "idle" broadcasts while ringing. Trust the real call state instead.
+                    val st = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+                    if (!isRinging()) {
+                        note("stop_log", "stopped: broadcast=$st")
+                        ringing = false; handledFor = null; fetching = null; stop()
+                    } else {
+                        note("stop_log", "ignored stray broadcast=$st while still ringing")
+                    }
+                }
             }
         }
     }
