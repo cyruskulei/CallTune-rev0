@@ -14,7 +14,6 @@ import android.telephony.TelephonyManager
 
 class CallService : Service() {
     private var player: MediaPlayer? = null
-    private var prevRinger: Int? = null
     private var prevMedia: Int? = null
     @Volatile private var ringing = false
     private val main = Handler(Looper.getMainLooper())
@@ -112,6 +111,7 @@ class CallService : Service() {
     override fun onCreate() {
         super.onCreate()
         note("svc_log", "service started")
+        restoreRinger() // recover if an earlier run was killed while the ringer was silenced
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel("ct", "CallTune", NotificationManager.IMPORTANCE_LOW))
@@ -159,7 +159,11 @@ class CallService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         if (!nm.isNotificationPolicyAccessGranted) return
         val am = getSystemService(AudioManager::class.java)
-        if (prevRinger == null) prevRinger = am.ringerMode
+        val sp = getSharedPreferences("settings", MODE_PRIVATE)
+        // Remember the user's real ringer mode on disk, once, so it can always be restored.
+        if (!sp.getBoolean("silenced_by_us", false)) {
+            sp.edit().putInt("orig_ringer", am.ringerMode).putBoolean("silenced_by_us", true).apply()
+        }
         am.ringerMode = AudioManager.RINGER_MODE_SILENT
     }
 
@@ -182,10 +186,13 @@ class CallService : Service() {
     }
 
     private fun restoreRinger() {
-        prevRinger?.let {
-            try { getSystemService(AudioManager::class.java).ringerMode = it } catch (_: Exception) {}
-        }
-        prevRinger = null
+        val sp = getSharedPreferences("settings", MODE_PRIVATE)
+        if (!sp.getBoolean("silenced_by_us", false)) return
+        try {
+            getSystemService(AudioManager::class.java).ringerMode =
+                sp.getInt("orig_ringer", AudioManager.RINGER_MODE_NORMAL)
+        } catch (_: Exception) {}
+        sp.edit().putBoolean("silenced_by_us", false).apply()
     }
 
     private fun stop() {
