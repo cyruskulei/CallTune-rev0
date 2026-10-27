@@ -53,7 +53,11 @@ object Cloud {
             val json = JSONObject(c.inputStream.bufferedReader().readText())
             val b64 = json.getJSONObject("fields").getJSONObject("data").getString("stringValue")
             val f = File(ctx.cacheDir, "tune_${TuneStore.norm(number)}.audio")
-            f.writeBytes(Base64.decode(b64, Base64.NO_WRAP))
+            // Write to a temp file, then swap it in. Overwriting the file directly would cut off
+            // a tune that is playing from it at this very moment.
+            val tmp = File(ctx.cacheDir, "tune_${TuneStore.norm(number)}.tmp")
+            tmp.writeBytes(Base64.decode(b64, Base64.NO_WRAP))
+            if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
             f
         } catch (e: Exception) {
             cachedFile(ctx, number)
