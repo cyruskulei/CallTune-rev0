@@ -1,3 +1,4 @@
+// STABLE v1: simple call handling. No ringer changes, no background watcher.
 package com.calltune.app
 
 import android.app.*
@@ -5,113 +6,86 @@ import android.content.*
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
-import android.os.Looper
-import android.net.Uri
 import android.os.IBinder
+import android.os.Looper
 import android.telephony.TelephonyManager
 
 class CallService : Service() {
     private var player: MediaPlayer? = null
     private var prevMedia: Int? = null
-    @Volatile private var ringing = false
     private val main = Handler(Looper.getMainLooper())
+    @Volatile private var ringId = 0 // changes with every ring or call end, so late downloads are ignored
+
+    private val autoStop = Runnable { stop() }
+    private var pendingDefault: Runnable? = null
 
     private fun isRinging(): Boolean = try {
         @Suppress("DEPRECATION")
         getSystemService(TelephonyManager::class.java).callState == TelephonyManager.CALL_STATE_RINGING
     } catch (e: Exception) { true }
 
-    /** Safety net: stops the tune as soon as the phone is no longer ringing. */
-    private val watch = object : Runnable {
-        override fun run() {
-            if (player == null) return
-            if (!isRinging()) { note("stop_log", "stopped: watcher saw call no longer ringing"); ringing = false; stop() } else main.postDelayed(this, 300)
-        }
-    }
-
-    private val receiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            when (intent.getStringExtra(TelephonyManager.EXTRA_STATE)) {
-                TelephonyManager.EXTRA_STATE_RINGING -> {
-                    ringing = true
-                    @Suppress("DEPRECATION")
-                    val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
-                    handleRing(context, number)
-                }
-                else -> {
-                    // Dual-SIM phones send extra "idle" broadcasts while ringing. Trust the real call state instead.
-                    val st = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
-                    if (!isRinging()) {
-                        note("stop_log", "stopped: broadcast=$st")
-                        ringing = false; handledFor = null; fetching = null; stop()
-                    } else {
-                        note("stop_log", "ignored stray broadcast=$st while still ringing")
-                    }
-                }
-            }
-        }
-    }
-
     private fun note(key: String, msg: String) {
         val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
         getSharedPreferences("settings", MODE_PRIVATE).edit().putString(key, "$t $msg").apply()
     }
 
-    private var pendingDefault: Runnable? = null
-    private var handledFor: String? = null
-    private var fetching: String? = null
+    private val receiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
+            if (state == TelephonyManager.EXTRA_STATE_RINGING) {
+                @Suppress("DEPRECATION")
+                val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
+                handleRing(context, number)
+            } else if (!isRinging()) {
+                // Call answered or ended (extra "idle" signals from a second SIM are ignored).
+                note("stop_log", "stopped: state=$state")
+                ringId++
+                stop()
+            } else {
+                note("stop_log", "ignored stray state=$state while ringing")
+            }
+        }
+    }
 
     private fun handleRing(ctx: Context, number: String?) {
         note("ring_log", "ring, number=" + (number ?: "NOT PROVIDED"))
-        val specific = number?.let { if (it.isBlank()) null else TuneStore.findSpecific(ctx, it) }
-        if (specific != null) {
-            if (handledFor != number) { handledFor = number; play(specific) }
-            return
-        }
-        val default = TuneStore.findDefault(ctx)
-        val mode = getSharedPreferences("settings", MODE_PRIVATE).getString("mode", "free")
-        if (mode == "free") {
-            // Free mode: only the receiver's own tune plays. No waiting, no cloud.
-            if (specific != null) {
-                if (handledFor != number) { handledFor = number; play(specific) }
-            } else if (player == null && default != null) {
-                play(default)
-            }
-            return
-        }
-        if (number.isNullOrBlank()) {
-            // The number may arrive in a second broadcast. Wait briefly, then fall back to the default tune.
-            pendingDefault?.let { main.removeCallbacks(it) }
-            val r = Runnable {
-                if (ringing && isRinging() && player == null && default != null) {
-                    note("play_log", "no number received, using default tune")
-                    play(default)
-                }
-            }
-            pendingDefault = r
-            main.postDelayed(r, 1500)
-            return
-        }
+        val id = ++ringId
         pendingDefault?.let { main.removeCallbacks(it) }
-        if (handledFor == number || fetching == number) return
-        val cached = Cloud.cachedFile(ctx, number)
+        val hasNumber = !number.isNullOrBlank()
+        val specific = if (hasNumber) TuneStore.findSpecific(ctx, number!!) else null
+        // Your own saved tune if you have one, otherwise the built-in default tune.
+        val default: Uri? = TuneStore.findDefault(ctx)
+            ?: Uri.parse("android.resource://" + ctx.packageName + "/raw/default_tune")
+        val mode = getSharedPreferences("settings", MODE_PRIVATE).getString("mode", "free")
+
+        if (mode == "free") {
+            (specific ?: default)?.let { play(it) }
+            return
+        }
+        // PRO mode: the caller's tune
+        if (specific != null) { play(specific); return }
+        if (!hasNumber) {
+            // The number may arrive in the next broadcast. If not, use the default tune.
+            val r = Runnable { if (id == ringId && isRinging() && default != null) play(default) }
+            pendingDefault = r
+            main.postDelayed(r, 2000)
+            return
+        }
+        val cached = Cloud.cachedFile(ctx, number!!)
         if (cached != null) {
-            handledFor = number
             play(Uri.fromFile(cached))
             Thread { Cloud.fetch(ctx, number) }.start() // refresh for next time
             return
         }
-        fetching = number
         Thread {
             val f = Cloud.fetch(ctx, number)
             main.post {
-                fetching = null
-                if (ringing && isRinging()) {
+                if (id == ringId && isRinging()) {
                     val u = f?.let { Uri.fromFile(it) } ?: default
-                    if (u != null) { handledFor = number; play(u) }
-                    else note("play_log", "no tune found for $number")
+                    if (u != null) play(u) else note("play_log", "no tune found for $number")
                 }
             }
         }.start()
@@ -120,7 +94,6 @@ class CallService : Service() {
     override fun onCreate() {
         super.onCreate()
         note("svc_log", "service started")
-        restoreRinger() // recover if an earlier run was killed while the ringer was silenced
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel("ct", "CallTune", NotificationManager.IMPORTANCE_LOW))
@@ -154,28 +127,12 @@ class CallService : Service() {
                 start()
             }
             note("play_log", "playing OK: $uri")
-            main.removeCallbacks(watch)
-            main.postDelayed(watch, 300)
-            silenceRinger()
             raiseVolume()
+            main.postDelayed(autoStop, 60_000) // safety: never play longer than a minute
         } catch (e: Exception) {
             note("play_log", "FAILED: ${e.javaClass.simpleName} ${e.message}")
             stop()
         }
-    }
-
-    private fun silenceRinger() {
-        // Only touch the phone's ringer if the user switched this option on.
-        if (!getSharedPreferences("settings", MODE_PRIVATE).getBoolean("silence_ringer", false)) return
-        val nm = getSystemService(NotificationManager::class.java)
-        if (!nm.isNotificationPolicyAccessGranted) return
-        val am = getSystemService(AudioManager::class.java)
-        val sp = getSharedPreferences("settings", MODE_PRIVATE)
-        // Remember the user's real ringer mode on disk, once, so it can always be restored.
-        if (!sp.getBoolean("silenced_by_us", false)) {
-            sp.edit().putInt("orig_ringer", am.ringerMode).putBoolean("silenced_by_us", true).apply()
-        }
-        am.ringerMode = AudioManager.RINGER_MODE_SILENT
     }
 
     private fun raiseVolume() {
@@ -196,22 +153,8 @@ class CallService : Service() {
         prevMedia = null
     }
 
-    private fun restoreRinger() {
-        val sp = getSharedPreferences("settings", MODE_PRIVATE)
-        if (!sp.getBoolean("silenced_by_us", false)) return
-        try {
-            val m = sp.getInt("orig_ringer", AudioManager.RINGER_MODE_NORMAL)
-            getSystemService(AudioManager::class.java).ringerMode = m
-            note("ringer_log", "restored ringer to mode $m")
-        } catch (e: Exception) {
-            note("ringer_log", "restore FAILED: ${e.javaClass.simpleName}")
-        }
-        sp.edit().putBoolean("silenced_by_us", false).apply()
-    }
-
     private fun stop() {
-        main.removeCallbacks(watch)
-        restoreRinger()
+        main.removeCallbacks(autoStop)
         restoreVolume()
         player?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
         player = null
