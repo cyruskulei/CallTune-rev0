@@ -71,6 +71,7 @@ class MainActivity : Activity() {
             text = "Stop CallTune"
             setOnClickListener {
                 setAutostart(false)
+                applyAudioProfile(false)
                 stopService(Intent(this@MainActivity, CallService::class.java))
             }
         })
@@ -194,9 +195,38 @@ class MainActivity : Activity() {
         getSharedPreferences("settings", MODE_PRIVATE).edit().putBoolean("autostart", on).apply()
     }
 
+    private fun applyAudioProfile(on: Boolean) {
+        try {
+            val am = getSystemService(android.media.AudioManager::class.java)
+            val sp = getSharedPreferences("settings", MODE_PRIVATE)
+            if (on) {
+                // Save current state before changing anything.
+                sp.edit()
+                    .putInt("saved_ringer", am.ringerMode)
+                    .putBoolean("saved_vibrate", am.getStreamVolume(android.media.AudioManager.STREAM_RING) == 0)
+                    .apply()
+                // 1. Silent mode (ringerMode = 0 is silent on MIUI/Redmi; 1 = vibrate; 2 = normal)
+                am.ringerMode = android.media.AudioManager.RINGER_MODE_SILENT
+                // 2. Make sure media is NOT silenced (CallTune plays at media volume).
+                // MIUI's silent mode may have lowered media; restore it to at least 50%.
+                val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+                if (am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) < max / 2)
+                    am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, (max * 0.7).toInt(), 0)
+                Toast.makeText(this, "CallTune started. Ringer silenced, media on.", Toast.LENGTH_LONG).show()
+            } else {
+                // Restore previous ringer mode.
+                val saved = sp.getInt("saved_ringer", android.media.AudioManager.RINGER_MODE_NORMAL)
+                am.ringerMode = saved
+                Toast.makeText(this, "CallTune stopped. Ringer restored.", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, if (on) "CallTune started." else "CallTune stopped.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun start() {
         setAutostart(true)
+        applyAudioProfile(true)
         startForegroundService(Intent(this, CallService::class.java))
-        Toast.makeText(this, "CallTune started", Toast.LENGTH_SHORT).show()
     }
 }
