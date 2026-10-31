@@ -20,6 +20,82 @@ class CallService : Service() {
     @Volatile private var ringId = 0 // changes with every ring or call end, so late downloads are ignored
 
     private val autoStop = Runnable { stop() }
+
+    // --- Outgoing calls: the caller hears the receiver's tune on the caller's own phone ---
+    private var outPlayer: MediaPlayer? = null
+    @Volatile private var outgoing = false
+    private val outStop = Runnable { stopOutgoing() }
+    private val outWatch = object : Runnable {
+        override fun run() {
+            if (!outgoing) return
+            val idle = try {
+                @Suppress("DEPRECATION")
+                getSystemService(TelephonyManager::class.java).callState == TelephonyManager.CALL_STATE_IDLE
+            } catch (e: Exception) { false }
+            if (idle) stopOutgoing() else main.postDelayed(this, 500)
+        }
+    }
+
+    private val outReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (!getSharedPreferences("settings", MODE_PRIVATE).getBoolean("caller_hears", true)) return
+            @Suppress("DEPRECATION")
+            val number = intent.getStringExtra(Intent.EXTRA_PHONE_NUMBER) ?: resultData
+            if (number.isNullOrBlank()) { note("out_log", "outgoing call, number not provided"); return }
+            note("out_log", "dialing $number")
+            startOutgoing(context, number)
+        }
+    }
+
+    private fun startOutgoing(ctx: Context, number: String) {
+        stopOutgoing()
+        outgoing = true
+        val cached = Cloud.cachedFile(ctx, number)
+        if (cached != null) {
+            playOutgoing(Uri.fromFile(cached))
+            Thread { Cloud.fetch(ctx, number) }.start() // refresh for next time
+            return
+        }
+        Thread {
+            val f = Cloud.fetch(ctx, number)
+            main.post {
+                if (outgoing && f != null) playOutgoing(Uri.fromFile(f))
+                else if (outgoing) note("out_log", "no tune found for $number")
+            }
+        }.start()
+    }
+
+    private fun playOutgoing(uri: Uri) {
+        try {
+            outPlayer?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
+            outPlayer = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                setDataSource(this@CallService, uri)
+                isLooping = true
+                prepare()
+                start()
+            }
+            note("out_log", "playing receiver's tune to the caller: $uri")
+            main.removeCallbacks(outStop)
+            main.postDelayed(outStop, 20_000) // we cannot detect the answer, so stop after 20 seconds
+            main.removeCallbacks(outWatch)
+            main.postDelayed(outWatch, 500)
+        } catch (e: Exception) {
+            note("out_log", "FAILED: ${e.javaClass.simpleName} ${e.message}")
+            stopOutgoing()
+        }
+    }
+
+    private fun stopOutgoing() {
+        outgoing = false
+        main.removeCallbacks(outStop)
+        main.removeCallbacks(outWatch)
+        outPlayer?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
+        outPlayer = null
+    }
     private var pendingDefault: Runnable? = null
 
     private fun isRinging(): Boolean = try {
@@ -39,6 +115,8 @@ class CallService : Service() {
                 @Suppress("DEPRECATION")
                 val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
                 handleRing(context, number)
+            } else if (outgoing) {
+                if (state == TelephonyManager.EXTRA_STATE_IDLE) stopOutgoing()
             } else if (!isRinging()) {
                 // Call answered or ended (extra "idle" signals from a second SIM are ignored).
                 note("stop_log", "stopped: state=$state")
@@ -111,6 +189,11 @@ class CallService : Service() {
         val f = IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, f, Context.RECEIVER_EXPORTED)
         else registerReceiver(receiver, f)
+        val o = IntentFilter(Intent.ACTION_NEW_OUTGOING_CALL)
+        try {
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(outReceiver, o, Context.RECEIVER_EXPORTED)
+            else registerReceiver(outReceiver, o)
+        } catch (e: Exception) { note("out_log", "could not listen for outgoing calls: ${e.javaClass.simpleName}") }
     }
 
     private fun play(uri: Uri) {
@@ -163,7 +246,9 @@ class CallService : Service() {
     override fun onDestroy() {
         note("svc_log", "service stopped")
         stop()
+        stopOutgoing()
         try { unregisterReceiver(receiver) } catch (_: Exception) {}
+        try { unregisterReceiver(outReceiver) } catch (_: Exception) {}
         super.onDestroy()
     }
 

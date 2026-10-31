@@ -14,6 +14,7 @@ class MainActivity : Activity() {
     private lateinit var myNumber: EditText
     private lateinit var list: TextView
     private lateinit var modeBtn: Button
+    private lateinit var callerBtn: Button
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
@@ -59,6 +60,15 @@ class MainActivity : Activity() {
         }
         root.addView(modeBtn)
         updateModeText()
+        callerBtn = Button(this).apply {
+            setOnClickListener {
+                val sp = getSharedPreferences("settings", MODE_PRIVATE)
+                sp.edit().putBoolean("caller_hears", !sp.getBoolean("caller_hears", true)).apply()
+                updateCallerText()
+            }
+        }
+        root.addView(callerBtn)
+        updateCallerText()
         root.addView(Button(this).apply {
             text = "Test play my saved tune"
             setOnClickListener { testPlay() }
@@ -135,6 +145,12 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun updateCallerText() {
+        val on = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("caller_hears", true)
+        callerBtn.text = if (on) "When I call: I hear the receiver's tune (ON). Tap to switch"
+                         else "When I call: I hear the receiver's tune (OFF). Tap to switch"
+    }
+
     private fun updateModeText() {
         val free = getSharedPreferences("settings", MODE_PRIVATE).getString("mode", "free") == "free"
         modeBtn.text = if (free) "Mode: FREE (plays my own tune). Tap to switch"
@@ -175,11 +191,12 @@ class MainActivity : Activity() {
             "\nLast play: " + sp.getString("play_log", "none yet") +
             "\nService: " + sp.getString("svc_log", "none yet") +
             "\nRinger: " + sp.getString("ringer_log", "none yet") +
-            "\nStop: " + sp.getString("stop_log", "none yet")
+            "\nStop: " + sp.getString("stop_log", "none yet") +
+            "\nWhen I call: " + sp.getString("out_log", "none yet")
     }
 
     private fun askPermsThenStart() {
-        val need = mutableListOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_CALL_LOG)
+        val need = mutableListOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.READ_CALL_LOG, Manifest.permission.PROCESS_OUTGOING_CALLS)
         if (Build.VERSION.SDK_INT >= 33) need += Manifest.permission.POST_NOTIFICATIONS
         val missing = need.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isEmpty()) start() else requestPermissions(missing.toTypedArray(), 2)
@@ -187,7 +204,10 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(c: Int, p: Array<out String>, r: IntArray) {
         super.onRequestPermissionsResult(c, p, r)
-        if (r.isNotEmpty() && r.all { it == PackageManager.PERMISSION_GRANTED }) start()
+        // Calls and call log are essential. The outgoing-call permission only adds the caller-side tune.
+        val ok = checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED
+        if (ok) start()
         else Toast.makeText(this, "Permissions are required", Toast.LENGTH_LONG).show()
     }
 
