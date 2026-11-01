@@ -29,6 +29,7 @@ class CallService : Service() {
     // So IDLE only stops the tune after the call has been seen active (OFFHOOK), or after this many ms.
     private val IDLE_GRACE_MS = 6000L
     @Volatile private var sawActive = false
+    private var lastSig = ""
     private var dialAt = 0L
     private var polls = 0
     private val outStop = Runnable { stopOutgoing("20 second cap") }
@@ -51,7 +52,7 @@ class CallService : Service() {
         val old = prefs.getString("out_log", "") ?: ""
         val line = "$t +${ms}ms $msg"
         val all = if (old.isEmpty()) line else "$old | $line"
-        prefs.edit().putString("out_log", all.takeLast(900)).apply()
+        prefs.edit().putString("out_log", all.takeLast(2500)).apply()
     }
 
     private val outWatch = object : Runnable {
@@ -59,7 +60,13 @@ class CallService : Service() {
             if (!outgoing) return
             val state = callStateName()
             polls++
-            if (polls <= 8) trace("poll state=$state")
+            // Log only when something changes: call state, audio mode, whether our player is still playing, call volume.
+            val sig = try {
+                val am = getSystemService(AudioManager::class.java)
+                val playing = try { outPlayer?.isPlaying } catch (_: Exception) { null }
+                "state=$state mode=${am.mode} playing=$playing callvol=${am.getStreamVolume(AudioManager.STREAM_VOICE_CALL)}"
+            } catch (_: Exception) { "state=$state" }
+            if (sig != lastSig) { lastSig = sig; trace(sig) }
             val idle = state == "IDLE"
             if (state == "OFFHOOK" || state == "RINGING") sawActive = true
             if (idle && (sawActive || System.currentTimeMillis() - dialAt >= IDLE_GRACE_MS)) stopOutgoing("watchdog saw IDLE")
@@ -77,6 +84,7 @@ class CallService : Service() {
             dialAt = System.currentTimeMillis()
             polls = 0
             sawActive = false
+            lastSig = ""
             startOutgoing(context, number)
         }
     }
