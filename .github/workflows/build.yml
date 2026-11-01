@@ -24,13 +24,8 @@ jobs:
       - name: Build APK
         run: gradle assembleDebug --no-daemon
 
-      - name: Show debug signing fingerprints
-        run: |
-          keytool -list -v \
-            -keystore "$HOME/.android/debug.keystore" \
-            -alias androiddebugkey \
-            -storepass android \
-            -keypass android | grep -E 'SHA1:|SHA256:'
+      - name: Show signing fingerprints
+        run: gradle :app:signingReport --no-daemon
 
       - uses: actions/upload-artifact@v4
         with:
