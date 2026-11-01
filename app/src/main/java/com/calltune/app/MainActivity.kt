@@ -1,6 +1,7 @@
 
 package com.calltune.app
 
+import com.google.firebase.FirebaseException
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
@@ -244,7 +245,7 @@ class MainActivity : Activity() {
                     signInWithPhoneCredential(credential)
                 }
 
-                override fun onVerificationFailed(e: Exception) {
+                override fun onVerificationFailed(e: FirebaseException) {
                     sendCodeBtn.isEnabled = true
                     authStatus.text = "Verification failed: ${e.message}"
                     Toast.makeText(
