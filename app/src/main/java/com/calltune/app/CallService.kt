@@ -1,4 +1,4 @@
-// DIAGNOSTIC BUILD (based on the uploaded CallService.kt): behaviour is unchanged unless IDLE_GRACE_MS is raised.
+// FIX BUILD (based on the uploaded CallService.kt): the caller-side tune is no longer stopped by an early IDLE state.
 // The 'When I call' line now shows a trace of why the caller-side tune stopped.
 package com.calltune.app
 
@@ -25,8 +25,10 @@ class CallService : Service() {
     // --- Outgoing calls: the caller hears the receiver's tune on the caller's own phone ---
     private var outPlayer: MediaPlayer? = null
     @Volatile private var outgoing = false
-    // DIAGNOSTIC: 0 = original behaviour. Set to 5000L to ignore "IDLE" for the first 5 s after dialling (suspected fix).
-    private val IDLE_GRACE_MS = 0L
+    // FIX: the phone can still report IDLE for a moment after dialling starts (seen on the Samsung: IDLE at +831 ms).
+    // So IDLE only stops the tune after the call has been seen active (OFFHOOK), or after this many ms.
+    private val IDLE_GRACE_MS = 6000L
+    @Volatile private var sawActive = false
     private var dialAt = 0L
     private var polls = 0
     private val outStop = Runnable { stopOutgoing("20 second cap") }
@@ -59,7 +61,8 @@ class CallService : Service() {
             polls++
             if (polls <= 8) trace("poll state=$state")
             val idle = state == "IDLE"
-            if (idle && System.currentTimeMillis() - dialAt >= IDLE_GRACE_MS) stopOutgoing("watchdog saw IDLE")
+            if (state == "OFFHOOK" || state == "RINGING") sawActive = true
+            if (idle && (sawActive || System.currentTimeMillis() - dialAt >= IDLE_GRACE_MS)) stopOutgoing("watchdog saw IDLE")
             else main.postDelayed(this, 500)
         }
     }
@@ -73,6 +76,7 @@ class CallService : Service() {
             note("out_log", "dialing $number")
             dialAt = System.currentTimeMillis()
             polls = 0
+            sawActive = false
             startOutgoing(context, number)
         }
     }
@@ -149,8 +153,9 @@ class CallService : Service() {
                 handleRing(context, number)
             } else if (outgoing) {
                 trace("broadcast state=$state")
+                if (state == TelephonyManager.EXTRA_STATE_OFFHOOK) sawActive = true
                 if (state == TelephonyManager.EXTRA_STATE_IDLE &&
-                    System.currentTimeMillis() - dialAt >= IDLE_GRACE_MS) stopOutgoing("IDLE broadcast")
+                    (sawActive || System.currentTimeMillis() - dialAt >= IDLE_GRACE_MS)) stopOutgoing("IDLE broadcast")
             } else if (!isRinging()) {
                 // Call answered or ended (extra "idle" signals from a second SIM are ignored).
                 note("stop_log", "stopped: state=$state")
