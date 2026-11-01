@@ -1,4 +1,5 @@
-// STABLE v1: simple call handling. No ringer changes, no background watcher.
+// DIAGNOSTIC BUILD (based on the uploaded CallService.kt): behaviour is unchanged unless IDLE_GRACE_MS is raised.
+// The 'When I call' line now shows a trace of why the caller-side tune stopped.
 package com.calltune.app
 
 import android.app.*
@@ -24,15 +25,42 @@ class CallService : Service() {
     // --- Outgoing calls: the caller hears the receiver's tune on the caller's own phone ---
     private var outPlayer: MediaPlayer? = null
     @Volatile private var outgoing = false
-    private val outStop = Runnable { stopOutgoing() }
+    // DIAGNOSTIC: 0 = original behaviour. Set to 5000L to ignore "IDLE" for the first 5 s after dialling (suspected fix).
+    private val IDLE_GRACE_MS = 0L
+    private var dialAt = 0L
+    private var polls = 0
+    private val outStop = Runnable { stopOutgoing("20 second cap") }
+
+    private fun callStateName(): String = try {
+        @Suppress("DEPRECATION")
+        when (getSystemService(TelephonyManager::class.java).callState) {
+            TelephonyManager.CALL_STATE_IDLE -> "IDLE"
+            TelephonyManager.CALL_STATE_RINGING -> "RINGING"
+            TelephonyManager.CALL_STATE_OFFHOOK -> "OFFHOOK"
+            else -> "?"
+        }
+    } catch (e: Exception) { "ERR" }
+
+    // Appends to the 'When I call' line (keeps the last 900 characters).
+    private fun trace(msg: String) {
+        val prefs = getSharedPreferences("settings", MODE_PRIVATE)
+        val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+        val ms = if (dialAt > 0) System.currentTimeMillis() - dialAt else 0
+        val old = prefs.getString("out_log", "") ?: ""
+        val line = "$t +${ms}ms $msg"
+        val all = if (old.isEmpty()) line else "$old | $line"
+        prefs.edit().putString("out_log", all.takeLast(900)).apply()
+    }
+
     private val outWatch = object : Runnable {
         override fun run() {
             if (!outgoing) return
-            val idle = try {
-                @Suppress("DEPRECATION")
-                getSystemService(TelephonyManager::class.java).callState == TelephonyManager.CALL_STATE_IDLE
-            } catch (e: Exception) { false }
-            if (idle) stopOutgoing() else main.postDelayed(this, 500)
+            val state = callStateName()
+            polls++
+            if (polls <= 8) trace("poll state=$state")
+            val idle = state == "IDLE"
+            if (idle && System.currentTimeMillis() - dialAt >= IDLE_GRACE_MS) stopOutgoing("watchdog saw IDLE")
+            else main.postDelayed(this, 500)
         }
     }
 
@@ -43,12 +71,14 @@ class CallService : Service() {
             val number = intent.getStringExtra(Intent.EXTRA_PHONE_NUMBER) ?: resultData
             if (number.isNullOrBlank()) { note("out_log", "outgoing call, number not provided"); return }
             note("out_log", "dialing $number")
+            dialAt = System.currentTimeMillis()
+            polls = 0
             startOutgoing(context, number)
         }
     }
 
     private fun startOutgoing(ctx: Context, number: String) {
-        stopOutgoing()
+        stopOutgoing("restart")
         outgoing = true
         val cached = Cloud.cachedFile(ctx, number)
         if (cached != null) {
@@ -79,17 +109,19 @@ class CallService : Service() {
                 start()
             }
             note("out_log", "playing receiver's tune to the caller: $uri")
+            trace("started, state=${callStateName()}")
             main.removeCallbacks(outStop)
             main.postDelayed(outStop, 20_000) // we cannot detect the answer, so stop after 20 seconds
             main.removeCallbacks(outWatch)
             main.postDelayed(outWatch, 500)
         } catch (e: Exception) {
             note("out_log", "FAILED: ${e.javaClass.simpleName} ${e.message}")
-            stopOutgoing()
+            stopOutgoing("player failed")
         }
     }
 
-    private fun stopOutgoing() {
+    private fun stopOutgoing(why: String = "unspecified") {
+        if (outgoing || outPlayer != null) trace("STOP: $why (state=${callStateName()})")
         outgoing = false
         main.removeCallbacks(outStop)
         main.removeCallbacks(outWatch)
@@ -116,7 +148,9 @@ class CallService : Service() {
                 val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
                 handleRing(context, number)
             } else if (outgoing) {
-                if (state == TelephonyManager.EXTRA_STATE_IDLE) stopOutgoing()
+                trace("broadcast state=$state")
+                if (state == TelephonyManager.EXTRA_STATE_IDLE &&
+                    System.currentTimeMillis() - dialAt >= IDLE_GRACE_MS) stopOutgoing("IDLE broadcast")
             } else if (!isRinging()) {
                 // Call answered or ended (extra "idle" signals from a second SIM are ignored).
                 note("stop_log", "stopped: state=$state")
@@ -246,7 +280,7 @@ class CallService : Service() {
     override fun onDestroy() {
         note("svc_log", "service stopped")
         stop()
-        stopOutgoing()
+        stopOutgoing("service destroyed")
         try { unregisterReceiver(receiver) } catch (_: Exception) {}
         try { unregisterReceiver(outReceiver) } catch (_: Exception) {}
         super.onDestroy()
