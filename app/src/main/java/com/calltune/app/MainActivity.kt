@@ -219,11 +219,15 @@ class MainActivity : Activity() {
     }
 
     private fun sendVerificationCode() {
+        authStatus.text = "Send button tapped. Checking phone number..."
+
         val number = phoneBox.text.toString().trim()
 
         if (!number.startsWith("+") ||
             number.count { it.isDigit() } !in 8..15
         ) {
+            authStatus.text =
+                "Invalid number. Enter an international number starting with +."
             Toast.makeText(
                 this,
                 "Enter a valid international number, such as +254712345678.",
@@ -233,7 +237,13 @@ class MainActivity : Activity() {
         }
 
         sendCodeBtn.isEnabled = false
-        authStatus.text = "Requesting SMS verification code..."
+        authStatus.text = "Contacting Firebase to request an SMS code..."
+
+        Toast.makeText(
+            this,
+            "Requesting verification code...",
+            Toast.LENGTH_SHORT
+        ).show()
 
         val callbacks =
             object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
@@ -274,6 +284,7 @@ class MainActivity : Activity() {
 
                 override fun onCodeAutoRetrievalTimeOut(id: String) {
                     verificationId = id
+                    sendCodeBtn.isEnabled = true
                     authStatus.text =
                         "Enter the SMS code manually to finish verification."
                 }
@@ -291,7 +302,13 @@ class MainActivity : Activity() {
 
         } catch (e: Exception) {
             sendCodeBtn.isEnabled = true
-            authStatus.text = "Could not start verification: ${e.message}"
+            authStatus.text =
+                "Could not start verification: ${e.javaClass.simpleName}: ${e.message}"
+            Toast.makeText(
+                this,
+                authStatus.text,
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
