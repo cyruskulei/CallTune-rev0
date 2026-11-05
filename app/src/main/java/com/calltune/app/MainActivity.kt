@@ -43,8 +43,18 @@ class MainActivity : Activity() {
             setPadding(pad, pad * 2, pad, pad)
         }
 
+        root.addView(ImageView(this).apply {
+            setImageResource(R.drawable.rinom_logo)
+            adjustViewBounds = true
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (160 * resources.displayMetrics.density).toInt()
+            )
+        })
+
         root.addView(TextView(this).apply {
-            text = "CallTune"
+            text = "Rinom Calltune"
             textSize = 26f
         })
 
