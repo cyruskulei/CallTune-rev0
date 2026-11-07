@@ -47,15 +47,25 @@ class MainActivity : Activity() {
             setImageResource(R.drawable.rinom_logo)
             adjustViewBounds = true
             scaleType = ImageView.ScaleType.FIT_CENTER
+            importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO
             layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                (160 * resources.displayMetrics.density).toInt()
-            )
+                (96 * resources.displayMetrics.density).toInt(),
+                (96 * resources.displayMetrics.density).toInt()
+            ).apply {
+                gravity = android.view.Gravity.CENTER_HORIZONTAL
+                bottomMargin = pad / 2
+            }
         })
 
         root.addView(TextView(this).apply {
             text = "Rinom Calltune"
             textSize = 22f
+            gravity = android.view.Gravity.CENTER_HORIZONTAL
+        })
+
+        root.addView(Button(this).apply {
+            text = "Open Phone and default app setup"
+            setOnClickListener { startActivity(Intent(this@MainActivity, DialerActivity::class.java)) }
         })
 
         root.addView(TextView(this).apply {

@@ -1,5 +1,3 @@
-// FIX BUILD (based on the uploaded CallService.kt): the caller-side tune is no longer stopped by an early IDLE state.
-// The 'When I call' line now shows a trace of why the caller-side tune stopped.
 package com.calltune.app
 
 import android.app.*
@@ -15,6 +13,48 @@ import android.os.Looper
 import android.telephony.TelephonyManager
 
 class CallService : Service() {
+    companion object {
+        var instance: CallService? = null
+            private set
+    }
+    private val outgoingGate = OutgoingTuneGate<android.telecom.Call>()
+
+    /** Telecom reports ACTIVE separately from DIALING; phone-state OFFHOOK does not. */
+    fun onTelecomCallsChanged(calls: List<android.telecom.Call>) {
+        val connected = calls.any {
+            it.state == android.telecom.Call.STATE_ACTIVE || it.state == android.telecom.Call.STATE_HOLDING
+        }
+        val candidate = calls.firstOrNull {
+            it.state == android.telecom.Call.STATE_DIALING &&
+                it.details?.hasProperty(android.telecom.Call.Details.PROPERTY_EMERGENCY_CALLBACK_MODE) != true
+        }
+        val action = outgoingGate.update(candidate, connected)
+        if (action == OutgoingTuneGate.Action.STOP) {
+            stopOutgoing(if (connected) "Telecom connected" else "Telecom no dialing call")
+        } else if (action == OutgoingTuneGate.Action.START && candidate != null) {
+            if (getSharedPreferences("settings", MODE_PRIVATE).getBoolean("caller_hears", true)) {
+                val handle = candidate.details?.handle
+                val tm = getSystemService(android.telephony.TelephonyManager::class.java)
+                val number = handle?.schemeSpecificPart
+                val emergency = try {
+                    if (Build.VERSION.SDK_INT >= 29 && number != null) tm.isEmergencyNumber(number)
+                    else android.telephony.PhoneNumberUtils.isEmergencyNumber(number.orEmpty())
+                } catch (_: Exception) { true }
+                if (!emergency && handle?.scheme == "tel" && !number.isNullOrBlank()) {
+                    dialAt = System.currentTimeMillis()
+                    sawActive = false
+                    startOutgoing(this, number)
+                }
+            }
+        }
+        if (connected || calls.none { it.state == android.telecom.Call.STATE_RINGING }) {
+            ringId++
+            pendingDefault?.let { main.removeCallbacks(it) }
+            pendingDefault = null
+            stop()
+        }
+    }
+
     private var player: MediaPlayer? = null
     private var prevMedia: Int? = null
     private val main = Handler(Looper.getMainLooper())
@@ -76,6 +116,7 @@ class CallService : Service() {
 
     private val outReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            if (getSystemService(android.telecom.TelecomManager::class.java).defaultDialerPackage == packageName) return
             if (!getSharedPreferences("settings", MODE_PRIVATE).getBoolean("caller_hears", true)) return
             @Suppress("DEPRECATION")
             val number = intent.getStringExtra(Intent.EXTRA_PHONE_NUMBER) ?: resultData
@@ -92,6 +133,7 @@ class CallService : Service() {
     private fun startOutgoing(ctx: Context, number: String) {
         stopOutgoing("restart")
         outgoing = true
+        val generation = outgoingGate.token()
         val cached = Cloud.cachedFile(ctx, number)
         if (cached != null) {
             playOutgoing(Uri.fromFile(cached))
@@ -101,8 +143,8 @@ class CallService : Service() {
         Thread {
             val f = Cloud.fetch(ctx, number)
             main.post {
-                if (outgoing && f != null) playOutgoing(Uri.fromFile(f))
-                else if (outgoing) note("out_log", "no tune found for $number")
+                if (outgoing && outgoingGate.isCurrent(generation) && f != null) playOutgoing(Uri.fromFile(f))
+                else if (outgoing && outgoingGate.isCurrent(generation)) note("out_log", "no tune found for $number")
             }
         }.start()
     }
@@ -123,7 +165,7 @@ class CallService : Service() {
             note("out_log", "playing receiver's tune to the caller: $uri")
             trace("started, state=${callStateName()}")
             main.removeCallbacks(outStop)
-            main.postDelayed(outStop, 20_000) // we cannot detect the answer, so stop after 20 seconds
+            main.postDelayed(outStop, 20_000) // Safety cap; Telecom ACTIVE stops immediately when default dialer.
             main.removeCallbacks(outWatch)
             main.postDelayed(outWatch, 500)
         } catch (e: Exception) {
@@ -135,6 +177,7 @@ class CallService : Service() {
     private fun stopOutgoing(why: String = "unspecified") {
         if (outgoing || outPlayer != null) trace("STOP: $why (state=${callStateName()})")
         outgoing = false
+        outgoingGate.invalidate()
         main.removeCallbacks(outStop)
         main.removeCallbacks(outWatch)
         outPlayer?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
@@ -176,6 +219,14 @@ class CallService : Service() {
     }
 
     private fun handleRing(ctx: Context, number: String?) {
+        // Do not replace the carrier's call-waiting signal with music during conversation.
+        if (RinomInCallService.current?.calls?.any {
+            it.state == android.telecom.Call.STATE_ACTIVE || it.state == android.telecom.Call.STATE_HOLDING
+        } == true) {
+            ringId++
+            stop()
+            return
+        }
         note("ring_log", "ring, number=" + (number ?: "NOT PROVIDED"))
         val id = ++ringId
         pendingDefault?.let { main.removeCallbacks(it) }
@@ -218,6 +269,7 @@ class CallService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         note("svc_log", "service started")
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
@@ -241,6 +293,7 @@ class CallService : Service() {
             if (Build.VERSION.SDK_INT >= 33) registerReceiver(outReceiver, o, Context.RECEIVER_EXPORTED)
             else registerReceiver(outReceiver, o)
         } catch (e: Exception) { note("out_log", "could not listen for outgoing calls: ${e.javaClass.simpleName}") }
+        RinomInCallService.current?.let { onTelecomCallsChanged(it.calls) }
     }
 
     private fun play(uri: Uri) {
@@ -291,6 +344,7 @@ class CallService : Service() {
     }
 
     override fun onDestroy() {
+        if (instance === this) instance = null
         note("svc_log", "service stopped")
         stop()
         stopOutgoing("service destroyed")
