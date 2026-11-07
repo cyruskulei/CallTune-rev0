@@ -37,11 +37,35 @@ class DialerActivity : Activity() {
             setText(state?.getString("number") ?: intent.data?.schemeSpecificPart.orEmpty())
         }
         root.addView(number)
+        root.addView(LinearLayout(this).apply {
+            addView(Button(this@DialerActivity).apply {
+                text = "+"
+                contentDescription = "Insert plus for international number"
+                setOnClickListener { replaceNumberSelection("+") }
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(Button(this@DialerActivity).apply {
+                text = "Delete"
+                isAllCaps = false
+                contentDescription = "Delete digit. Hold to clear number"
+                setOnClickListener { deleteNumberSelection() }
+                setOnLongClickListener {
+                    number.text.clear()
+                    true
+                }
+            }, LinearLayout.LayoutParams(0, -2, 2f))
+        })
         for (row in listOf("123", "456", "789", "*0#")) {
             root.addView(LinearLayout(this).apply {
                 row.forEach { digit -> addView(Button(this@DialerActivity).apply {
-                    text = digit.toString()
-                    setOnClickListener { number.text.insert(number.selectionStart.coerceAtLeast(0), digit.toString()) }
+                    text = if (digit == '0') "0\n+" else digit.toString()
+                    setOnClickListener { replaceNumberSelection(digit.toString()) }
+                    if (digit == '0') {
+                        contentDescription = "Zero. Hold for plus"
+                        setOnLongClickListener {
+                            replaceNumberSelection("+")
+                            true
+                        }
+                    }
                 }, LinearLayout.LayoutParams(0, -2, 1f)) }
             })
         }
@@ -79,6 +103,27 @@ class DialerActivity : Activity() {
     override fun onSaveInstanceState(out: Bundle) {
         out.putString("number", number.text.toString())
         super.onSaveInstanceState(out)
+    }
+
+    private fun replaceNumberSelection(value: String) {
+        val text = number.text
+        val first = number.selectionStart.takeIf { it >= 0 } ?: text.length
+        val second = number.selectionEnd.takeIf { it >= 0 } ?: first
+        val start = minOf(first, second)
+        text.replace(start, maxOf(first, second), value)
+        number.setSelection((start + value.length).coerceAtMost(text.length))
+    }
+
+    private fun deleteNumberSelection() {
+        val text = number.text
+        val first = number.selectionStart.takeIf { it >= 0 } ?: text.length
+        val second = number.selectionEnd.takeIf { it >= 0 } ?: first
+        val start = minOf(first, second)
+        val end = maxOf(first, second)
+        when {
+            start != end -> { text.delete(start, end); number.setSelection(start) }
+            start > 0 -> { text.delete(start - 1, start); number.setSelection(start - 1) }
+        }
     }
 
     private fun isDefault() = getSystemService(TelecomManager::class.java).defaultDialerPackage == packageName
