@@ -55,7 +55,7 @@ class MainActivity : Activity() {
 
         root.addView(TextView(this).apply {
             text = "Rinom Calltune"
-            textSize = 26f
+            textSize = 22f
         })
 
         root.addView(TextView(this).apply {
@@ -103,7 +103,7 @@ class MainActivity : Activity() {
         })
 
         callerNumberBox = EditText(this).apply {
-            hint = "Caller number (blank = all callers)"
+            hint = "Caller number (optional)"
             inputType = android.text.InputType.TYPE_CLASS_PHONE
             setText(
                 getSharedPreferences("tune_input", MODE_PRIVATE)
@@ -220,6 +220,17 @@ class MainActivity : Activity() {
 
         list = TextView(this)
         root.addView(list)
+
+        // Keep controls readable on smaller screens.
+        for (i in 0 until root.childCount) {
+            when (val child = root.getChildAt(i)) {
+                is Button -> {
+                    child.textSize = 14f
+                    child.isAllCaps = false
+                }
+                is EditText -> child.textSize = 16f
+            }
+        }
 
         setContentView(ScrollView(this).apply {
             addView(root)
@@ -488,7 +499,7 @@ class MainActivity : Activity() {
 
         modeBtn.text =
             if (free) "Mode: FREE (plays my own tune). Tap to switch"
-            else "Mode: PRO (plays the caller's tune). Tap to switch"
+            else "Mode: PRO (incoming caller tune). Tap to switch"
     }
 
     private fun testPlay() {
