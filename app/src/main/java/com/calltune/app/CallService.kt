@@ -17,10 +17,16 @@ class CallService : Service() {
         var instance: CallService? = null
             private set
     }
+    private val incomingSession = IncomingTuneSession()
+    private val legacyIncoming = Any()
+    private var destroyed = false
+    private var ready = false
+    private fun enabled() = !destroyed && getSharedPreferences("settings", MODE_PRIVATE).getBoolean("autostart", false)
     private val outgoingGate = OutgoingTuneGate<android.telecom.Call>()
 
     /** Telecom reports ACTIVE separately from DIALING; phone-state OFFHOOK does not. */
     fun onTelecomCallsChanged(calls: List<android.telecom.Call>) {
+        if (!enabled()) { stopIncoming(); stopOutgoing("disabled"); return }
         val connected = calls.any {
             it.state == android.telecom.Call.STATE_ACTIVE || it.state == android.telecom.Call.STATE_HOLDING
         }
@@ -47,20 +53,20 @@ class CallService : Service() {
                 }
             }
         }
-        if (connected || calls.none { it.state == android.telecom.Call.STATE_RINGING }) {
-            ringId++
-            pendingDefault?.let { main.removeCallbacks(it) }
-            pendingDefault = null
-            stop()
+        val ringing = calls.firstOrNull { it.state == android.telecom.Call.STATE_RINGING }
+        if (connected || ringing == null) {
+            stopIncoming()
+        } else {
+            val number = ringing.details?.handle?.schemeSpecificPart
+            if (incomingSession.select(ringing, number)) handleRing(this, number)
         }
     }
 
     private var player: MediaPlayer? = null
     private var prevMedia: Int? = null
     private val main = Handler(Looper.getMainLooper())
-    @Volatile private var ringId = 0 // changes with every ring or call end, so late downloads are ignored
 
-    private val autoStop = Runnable { stop() }
+    private val autoStop = Runnable { stopIncoming() }
 
     // --- Outgoing calls: the caller hears the receiver's tune on the caller's own phone ---
     private var outPlayer: MediaPlayer? = null
@@ -143,33 +149,47 @@ class CallService : Service() {
         Thread {
             val f = Cloud.fetch(ctx, number)
             main.post {
-                if (outgoing && outgoingGate.isCurrent(generation) && f != null) playOutgoing(Uri.fromFile(f))
+                if (enabled() && outgoing && outgoingGate.isCurrent(generation) && f != null) playOutgoing(Uri.fromFile(f))
                 else if (outgoing && outgoingGate.isCurrent(generation)) note("out_log", "no tune found for $number")
             }
         }.start()
     }
 
     private fun playOutgoing(uri: Uri) {
+        if (!enabled() || !outgoing) return
+        val token = outgoingGate.token()
+        outPlayer?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
+        val media = MediaPlayer()
+        outPlayer = media
         try {
-            outPlayer?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
-            outPlayer = MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
-                setDataSource(this@CallService, uri)
-                isLooping = true
-                prepare()
-                start()
+            media.setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            media.setDataSource(this, uri)
+            media.isLooping = true
+            media.setOnPreparedListener {
+                if (outPlayer !== media || !enabled() || !outgoing || !outgoingGate.isCurrent(token)) return@setOnPreparedListener
+                try {
+                    media.start()
+                    note("out_log", "playing receiver tune on this phone")
+                    trace("started, state=${callStateName()}")
+                    main.removeCallbacks(outStop)
+                    main.postDelayed(outStop, 20_000)
+                    main.removeCallbacks(outWatch)
+                    main.postDelayed(outWatch, 500)
+                } catch (e: Exception) {
+                    note("out_log", "start failed: ${e.javaClass.simpleName}")
+                    stopOutgoing("player failed")
+                }
             }
-            note("out_log", "playing receiver's tune to the caller: $uri")
-            trace("started, state=${callStateName()}")
-            main.removeCallbacks(outStop)
-            main.postDelayed(outStop, 20_000) // Safety cap; Telecom ACTIVE stops immediately when default dialer.
-            main.removeCallbacks(outWatch)
-            main.postDelayed(outWatch, 500)
+            media.setOnErrorListener { _, what, extra ->
+                note("out_log", "player error: $what/$extra")
+                if (outPlayer === media) stopOutgoing("player failed")
+                true
+            }
+            media.prepareAsync()
         } catch (e: Exception) {
-            note("out_log", "FAILED: ${e.javaClass.simpleName} ${e.message}")
+            note("out_log", "prepare failed: ${e.javaClass.simpleName}")
             stopOutgoing("player failed")
         }
     }
@@ -183,12 +203,21 @@ class CallService : Service() {
         outPlayer?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
         outPlayer = null
     }
-    private var pendingDefault: Runnable? = null
+    private fun stopIncoming() {
+        incomingSession.invalidate()
+        stop()
+    }
+
+    private fun mayPlay(token: Long) = enabled() && incomingSession.isCurrent(token) && isRinging()
 
     private fun isRinging(): Boolean = try {
+        RinomInCallService.current?.let { service ->
+            return service.calls.any { it.state == android.telecom.Call.STATE_RINGING } &&
+                service.calls.none { it.state == android.telecom.Call.STATE_ACTIVE || it.state == android.telecom.Call.STATE_HOLDING }
+        }
         @Suppress("DEPRECATION")
         getSystemService(TelephonyManager::class.java).callState == TelephonyManager.CALL_STATE_RINGING
-    } catch (e: Exception) { true }
+    } catch (e: Exception) { false }
 
     private fun note(key: String, msg: String) {
         val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
@@ -197,11 +226,15 @@ class CallService : Service() {
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            if (!enabled()) return
+            // Telecom owns call selection while we are the default dialer. Do not let
+            // duplicate/second-SIM broadcasts restart its player or stop outgoing audio.
+            RinomInCallService.current?.let { onTelecomCallsChanged(it.calls); return }
             val state = intent.getStringExtra(TelephonyManager.EXTRA_STATE)
             if (state == TelephonyManager.EXTRA_STATE_RINGING) {
                 @Suppress("DEPRECATION")
                 val number = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
-                handleRing(context, number)
+                if (incomingSession.select(legacyIncoming, number)) handleRing(context, number)
             } else if (outgoing) {
                 trace("broadcast state=$state")
                 if (state == TelephonyManager.EXTRA_STATE_OFFHOOK) sawActive = true
@@ -210,8 +243,7 @@ class CallService : Service() {
             } else if (!isRinging()) {
                 // Call answered or ended (extra "idle" signals from a second SIM are ignored).
                 note("stop_log", "stopped: state=$state")
-                ringId++
-                stop()
+                stopIncoming()
             } else {
                 note("stop_log", "ignored stray state=$state while ringing")
             }
@@ -219,58 +251,33 @@ class CallService : Service() {
     }
 
     private fun handleRing(ctx: Context, number: String?) {
-        // Do not replace the carrier's call-waiting signal with music during conversation.
-        if (RinomInCallService.current?.calls?.any {
-            it.state == android.telecom.Call.STATE_ACTIVE || it.state == android.telecom.Call.STATE_HOLDING
-        } == true) {
-            ringId++
-            stop()
-            return
-        }
-        note("ring_log", "ring, number=" + (number ?: "NOT PROVIDED"))
-        val id = ++ringId
-        pendingDefault?.let { main.removeCallbacks(it) }
-        val hasNumber = !number.isNullOrBlank()
-        val specific = if (hasNumber) TuneStore.findSpecific(ctx, number!!) else null
-        // Your own saved tune if you have one, otherwise the built-in default tune.
-        val default: Uri? = TuneStore.findDefault(ctx)
-            ?: Uri.parse("android.resource://" + ctx.packageName + "/raw/default_tune")
+        if (!enabled()) return
+        val id = incomingSession.token()
+        note("ring_log", "incoming ring; number available=${!number.isNullOrBlank()}")
+        val specific = number?.takeIf { it.isNotBlank() }?.let { TuneStore.findSpecific(ctx, it) }
+        val fallback = TuneStore.findDefault(ctx)
+            ?: Uri.parse("android.resource://$packageName/${R.raw.default_tune}")
         val mode = getSharedPreferences("settings", MODE_PRIVATE).getString("mode", "free")
-
-        if (mode == "free") {
-            (specific ?: default)?.let { play(it) }
+        if (specific != null || mode == "free" || number.isNullOrBlank()) {
+            play(specific ?: fallback)
             return
         }
-        // PRO mode: the caller's tune
-        if (specific != null) { play(specific); return }
-        if (!hasNumber) {
-            // The number may arrive in the next broadcast. If not, use the default tune.
-            val r = Runnable { if (id == ringId && isRinging() && default != null) play(default) }
-            pendingDefault = r
-            main.postDelayed(r, 2000)
-            return
-        }
-        val cached = Cloud.cachedFile(ctx, number!!)
-        if (cached != null) {
-            play(Uri.fromFile(cached))
-            Thread { Cloud.fetch(ctx, number) }.start() // refresh for next time
-            return
-        }
+        val cached = Cloud.cachedFile(ctx, number)
+        // Ring locally immediately. A cache miss must not make the phone silent while
+        // the network is unavailable. A valid cloud result may replace this fallback
+        // only while the very same incoming call is still ringing.
+        play(cached?.let { Uri.fromFile(it) } ?: fallback)
         Thread {
-            val f = Cloud.fetch(ctx, number)
-            main.post {
-                if (id == ringId && isRinging()) {
-                    val u = f?.let { Uri.fromFile(it) } ?: default
-                    if (u != null) play(u) else note("play_log", "no tune found for $number")
-                }
+            val file = Cloud.fetch(ctx, number)
+            if (cached == null && file != null) main.post {
+                if (mayPlay(id)) play(Uri.fromFile(file))
             }
         }.start()
     }
 
     override fun onCreate() {
         super.onCreate()
-        instance = this
-        note("svc_log", "service started")
+        note("svc_log", "service starting")
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel("ct", "CallTune", NotificationManager.IMPORTANCE_LOW))
@@ -282,9 +289,11 @@ class CallService : Service() {
         try {
             startForeground(1, n)
         } catch (e: Exception) {
+            note("svc_log", "foreground start failed: ${e.javaClass.simpleName}")
             stopSelf()
             return
         }
+        if (!enabled()) { stopSelf(); return }
         val f = IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(receiver, f, Context.RECEIVER_EXPORTED)
         else registerReceiver(receiver, f)
@@ -293,28 +302,63 @@ class CallService : Service() {
             if (Build.VERSION.SDK_INT >= 33) registerReceiver(outReceiver, o, Context.RECEIVER_EXPORTED)
             else registerReceiver(outReceiver, o)
         } catch (e: Exception) { note("out_log", "could not listen for outgoing calls: ${e.javaClass.simpleName}") }
-        RinomInCallService.current?.let { onTelecomCallsChanged(it.calls) }
+        ready = true
+        instance = this
+        note("svc_log", "service ready; phone-state listener registered")
     }
 
-    private fun play(uri: Uri) {
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!ready || !enabled()) { stopSelf(); return START_NOT_STICKY }
+        // onCreate can run after the ringing broadcast. Recover the current call
+        // instead of waiting for a second call to initialise playback.
+        val telecom = RinomInCallService.current
+        if (telecom != null) onTelecomCallsChanged(telecom.calls)
+        else if (isRinging() && incomingSession.select(legacyIncoming, null)) handleRing(this, null)
+        return START_STICKY
+    }
+
+    private fun play(uri: Uri, allowFallback: Boolean = true) {
         stop()
-        try {
-            player = MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
-                setDataSource(this@CallService, uri)
-                isLooping = true
-                prepare()
-                start()
-            }
-            note("play_log", "playing OK: $uri")
-            raiseVolume()
-            main.postDelayed(autoStop, 60_000) // safety: never play longer than a minute
-        } catch (e: Exception) {
-            note("play_log", "FAILED: ${e.javaClass.simpleName} ${e.message}")
+        val token = incomingSession.token()
+        if (!mayPlay(token)) return
+        val media = MediaPlayer()
+        fun recover() {
+            if (player !== media) return
             stop()
+            if (allowFallback && mayPlay(token))
+                play(Uri.parse("android.resource://$packageName/${R.raw.default_tune}"), false)
+        }
+        player = media // Retain it before setup so every failure can release it.
+        try {
+            media.setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            media.setDataSource(this, uri)
+            media.isLooping = true
+            media.setOnPreparedListener {
+                if (player !== media || !mayPlay(token)) {
+                    if (player === media) stop()
+                    return@setOnPreparedListener
+                }
+                try {
+                    media.start()
+                    note("play_log", "playing OK; incoming tune")
+                    raiseVolume()
+                    main.postDelayed(autoStop, 60_000)
+                } catch (e: Exception) {
+                    note("play_log", "start failed: ${e.javaClass.simpleName}")
+                    recover()
+                }
+            }
+            media.setOnErrorListener { _, what, extra ->
+                note("play_log", "player error: $what/$extra")
+                recover()
+                true
+            }
+            media.prepareAsync()
+        } catch (e: Exception) {
+            note("play_log", "prepare failed: ${e.javaClass.simpleName}")
+            recover()
         }
     }
 
@@ -344,9 +388,11 @@ class CallService : Service() {
     }
 
     override fun onDestroy() {
+        destroyed = true
+        ready = false
         if (instance === this) instance = null
         note("svc_log", "service stopped")
-        stop()
+        stopIncoming()
         stopOutgoing("service destroyed")
         try { unregisterReceiver(receiver) } catch (_: Exception) {}
         try { unregisterReceiver(outReceiver) } catch (_: Exception) {}

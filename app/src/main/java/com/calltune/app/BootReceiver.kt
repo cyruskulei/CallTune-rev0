@@ -10,20 +10,21 @@ import android.content.Intent
 /** Restarts CallTune after the phone boots, if the user had it switched on. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
+        if (intent.action !in listOf(Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED)) return
+        val reason = if (intent.action == Intent.ACTION_BOOT_COMPLETED) "boot" else "app update"
         val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
         val on = sp.getBoolean("autostart", false)
         val time = java.text.SimpleDateFormat("d MMM HH:mm", java.util.Locale.getDefault())
             .format(java.util.Date())
         if (!on) {
-            sp.edit().putString("boot_log", "$time: boot seen, but autostart was OFF (tap Start first)").apply()
+            sp.edit().putString("boot_log", "$time: $reason seen, but autostart was OFF (tap Start first)").apply()
             return
         }
         try {
             context.startForegroundService(Intent(context, CallService::class.java))
-            sp.edit().putString("boot_log", "$time: boot seen, start requested").apply()
+            sp.edit().putString("boot_log", "$time: $reason seen, start requested").apply()
         } catch (e: Exception) {
-            sp.edit().putString("boot_log", "$time: boot seen, start blocked: ${e.javaClass.simpleName}").apply()
+            sp.edit().putString("boot_log", "$time: $reason seen, start blocked: ${e.javaClass.simpleName}").apply()
             // Some Android versions block this at boot: ask the user to tap instead.
             val nm = context.getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(

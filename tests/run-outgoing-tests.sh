@@ -5,3 +5,5 @@ classes=$(mktemp -d)
 trap 'rm -rf "$classes"' EXIT
 kotlinc app/src/main/java/com/calltune/app/OutgoingTuneGate.kt tests/OutgoingTuneGateTest.kt -d "$classes"
 kotlin -cp "$classes" OutgoingTuneGateTestKt
+kotlinc app/src/main/java/com/calltune/app/IncomingTuneSession.kt tests/IncomingTuneSessionTest.kt -d "$classes"
+kotlin -cp "$classes" IncomingTuneSessionTestKt

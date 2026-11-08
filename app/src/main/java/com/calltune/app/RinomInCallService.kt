@@ -21,6 +21,7 @@ class RinomInCallService : InCallService() {
     private val callTokens = mutableMapOf<Call, String>()
     private val main = Handler(Looper.getMainLooper())
     private var shownRingingCall: Call? = null
+    private var playbackStartRequested = false
 
     companion object {
         var current: RinomInCallService? = null
@@ -36,15 +37,31 @@ class RinomInCallService : InCallService() {
     private val controls = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != CONTROL) return
-            val token = intent.getStringExtra("call_token") ?: return
-            val call = callTokens.entries.firstOrNull { it.value == token }?.key ?: return
+            val operation = intent.getStringExtra("operation")
+            if (operation !in listOf("answer", "reject", "end")) { record("Unknown control ignored"); return }
+            val token = intent.getStringExtra("call_token")
+            val call = callTokens.entries.firstOrNull { it.value == token }?.key
+            if (call == null) { record("$operation ignored: expired call control"); return }
+            record("$operation received; state=${call.state}")
             try {
-                when (intent.getStringExtra("operation")) {
+                when (operation) {
                     "answer" -> if (call.state == Call.STATE_RINGING) call.answer(0)
-                    "reject" -> if (call.state == Call.STATE_RINGING) call.reject(false, null)
+                    "reject" -> if (call.state == Call.STATE_RINGING) {
+                        call.reject(false, null)
+                        // If rejection has not completed, retry only for this exact,
+                        // still-ringing call. Never disconnect
+                        // an answered or replacement call because of an old notification.
+                        main.postDelayed({
+                            if (callTokens[call] == token && call.state == Call.STATE_RINGING) {
+                                try { record("Reject fallback: disconnect requested"); call.disconnect() }
+                                catch (e: Exception) { failure("Reject fallback", e) }
+                            }
+                        }, 1000)
+                    }
                     "end" -> if (call.state != Call.STATE_DISCONNECTED) call.disconnect()
                 }
-            } catch (e: Exception) { record("Call control failed: ${e.javaClass.simpleName}") }
+                record("$operation command sent; awaiting Telecom state")
+            } catch (e: Exception) { failure("Call control", e) }
         }
     }
 
@@ -66,7 +83,7 @@ class RinomInCallService : InCallService() {
         callTokens[call] = UUID.randomUUID().toString()
         val callback = object : Call.Callback() {
             override fun onStateChanged(call: Call, state: Int) {
-                android.util.Log.i("RinomTelecom", "Call state changed: $state")
+                record("Call state changed: $state")
                 update()
             }
             override fun onDetailsChanged(call: Call, details: Call.Details) = update()
@@ -101,8 +118,10 @@ class RinomInCallService : InCallService() {
     }
 
     private fun update() {
+        if (CallService.instance != null) playbackStartRequested = false
         val active = callbacks.keys.filter { it.state != Call.STATE_DISCONNECTED }
         val call = active.firstOrNull { it.state == Call.STATE_RINGING } ?: active.firstOrNull()
+        if (active.isEmpty()) playbackStartRequested = false
         val nm = getSystemService(NotificationManager::class.java)
         val ringing = call?.state == Call.STATE_RINGING
         val newRing = ringing && shownRingingCall !== call
@@ -140,16 +159,51 @@ class RinomInCallService : InCallService() {
                 }
                 if (ringing && (Build.VERSION.SDK_INT < 34 || nm.canUseFullScreenIntent()))
                     notification.setFullScreenIntent(open, true)
-                nm.notify(NOTIFICATION_ID, notification.build())
+                try {
+                    nm.notify(NOTIFICATION_ID, notification.build())
+                } catch (e: IllegalArgumentException) {
+                    failure("CallStyle notification; state=${call.state}", e)
+                    // Keep controls usable if this device rejects a styled update.
+                    postFallbackAlert(nm, call, ringing, newRing, open)
+                }
                 if (newRing) record("Incoming alert posted; notifications=${nm.areNotificationsEnabled()}; channel=${nm.getNotificationChannel(CALL_CHANNEL)?.importance}; fullScreen=${Build.VERSION.SDK_INT < 34 || nm.canUseFullScreenIntent()}")
-            } catch (e: Exception) { record("Call notification failed: ${e.javaClass.simpleName}") }
+            } catch (e: Exception) { failure("Call notification; state=${call.state}", e) }
         }
-        try { CallService.instance?.onTelecomCallsChanged(active) }
-        catch (e: Exception) { record("Tune update failed: ${e.javaClass.simpleName}") }
+        try {
+            val playback = CallService.instance
+            if (playback != null) playback.onTelecomCallsChanged(active)
+            else if (active.isNotEmpty() && getSharedPreferences("settings", MODE_PRIVATE).getBoolean("autostart", false)) {
+                // Telecom can bind before the boot-started player is ready, or after
+                // its process was reclaimed. onStartCommand reconciles this snapshot.
+                if (!playbackStartRequested) {
+                    playbackStartRequested = true
+                    startForegroundService(Intent(this, CallService::class.java))
+                    record("Enabled playback start requested from Telecom")
+                }
+            }
+        } catch (e: Exception) { playbackStartRequested = false; failure("Tune startup/update", e) }
         refreshListeners()
         // Telecom-bound services are allowed to bring their call UI forward. Keep this
         // fallback, and report failures instead of silently swallowing them.
         if (newRing) showCallUi()
+    }
+
+    private fun postFallbackAlert(nm: NotificationManager, call: Call, ringing: Boolean,
+                                  newRing: Boolean, open: PendingIntent) {
+        val fallback = Notification.Builder(this, CALL_CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_menu_call)
+            .setContentTitle(if (ringing) "Incoming call" else "Call in progress")
+            .setContentText("Tap for call controls").setCategory(Notification.CATEGORY_CALL)
+            .setVisibility(Notification.VISIBILITY_PRIVATE).setOngoing(true)
+            .setContentIntent(open).setOnlyAlertOnce(!newRing)
+        if (ringing) fallback.addAction(Notification.Action.Builder(android.R.drawable.ic_menu_call,
+            "Answer", actionIntent(call, "answer")).build())
+        fallback.addAction(Notification.Action.Builder(android.R.drawable.ic_menu_call,
+            if (ringing) "Reject" else "End call", actionIntent(call, if (ringing) "reject" else "end")).build())
+        if (ringing && (Build.VERSION.SDK_INT < 34 || nm.canUseFullScreenIntent()))
+            fallback.setFullScreenIntent(open, true)
+        nm.notify(NOTIFICATION_ID, fallback.build())
+        record("Fallback call controls posted")
     }
 
     private fun showCallUi() {
@@ -157,6 +211,14 @@ class RinomInCallService : InCallService() {
             startActivity(Intent(this, InCallActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
         } catch (e: Exception) { record("Call screen blocked: ${e.javaClass.simpleName}") }
+    }
+
+    private fun failure(stage: String, error: Exception) {
+        // Stack frames identify the failing operation without exposing intent extras,
+        // phone numbers, call tokens or cloud credentials in the on-device report.
+        val frame = error.stackTrace.firstOrNull { it.className.startsWith("com.calltune.app") }
+        record("$stage failed: ${error.javaClass.simpleName}; ${frame?.fileName}:${frame?.lineNumber}")
+        android.util.Log.e("RinomTelecom", "$stage failed", error)
     }
 
     private fun record(message: String) {
@@ -177,6 +239,7 @@ class RinomInCallService : InCallService() {
     override fun onBringToForeground(showDialpad: Boolean) = showCallUi()
 
     override fun onDestroy() {
+        main.removeCallbacksAndMessages(null)
         try { unregisterReceiver(controls) } catch (_: IllegalArgumentException) { }
         callbacks.forEach { (call, callback) -> call.unregisterCallback(callback) }
         callbacks.clear()
