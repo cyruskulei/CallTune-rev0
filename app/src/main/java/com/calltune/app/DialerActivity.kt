@@ -2,6 +2,8 @@ package com.calltune.app
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
+import android.app.NotificationManager
 import android.app.role.RoleManager
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -30,6 +32,10 @@ class DialerActivity : Activity() {
         root.addView(Button(this).apply {
             text = "Choose as default Phone app"
             setOnClickListener { requestRole() }
+        })
+        root.addView(Button(this).apply {
+            text = "Incoming call display setup"
+            setOnClickListener { showIncomingSetup() }
         })
         number = EditText(this).apply {
             hint = "Phone number"
@@ -99,6 +105,52 @@ class DialerActivity : Activity() {
     override fun onSaveInstanceState(out: Bundle) {
         out.putString("number", number.text.toString())
         super.onSaveInstanceState(out)
+    }
+
+    private fun showIncomingSetup() {
+        val nm = getSystemService(NotificationManager::class.java)
+        val channel = nm.getNotificationChannel("calls")
+        val alertsAllowed = nm.areNotificationsEnabled() &&
+            (channel == null || channel.importance >= NotificationManager.IMPORTANCE_HIGH)
+        val fullScreenAllowed = Build.VERSION.SDK_INT < 34 || nm.canUseFullScreenIntent()
+        val report = buildString {
+            append(if (isDefault()) "Default Phone app: selected.\n" else "Default Phone app: not selected.\n")
+            append(if (alertsAllowed) "Call alerts: enabled.\n" else "Call alerts: blocked or not set to high importance.\n")
+            append(if (fullScreenAllowed) "Full-screen call alerts: available.\n" else "Full-screen call alerts: permission needed.\n")
+            append("\nTest an incoming call with the screen locked. Phone-specific restrictions can still prevent the screen appearing.\n")
+            val log = getSharedPreferences("settings", MODE_PRIVATE).getString("phone_ui_log", "")
+            if (!log.isNullOrBlank()) append("\nRecent call display checks:\n$log")
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("Incoming call display")
+            .setMessage(report).setNegativeButton("Close", null)
+            .setNeutralButton("Call alert settings") { _, _ ->
+                val settings = if (channel != null)
+                    Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                        .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, "calls")
+                else Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                    .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName)
+                openDisplaySettings(settings)
+            }
+        if (Build.VERSION.SDK_INT >= 34 && !fullScreenAllowed) {
+            dialog.setPositiveButton("Allow full-screen calls") { _, _ ->
+                openDisplaySettings(Intent(android.provider.Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                    Uri.parse("package:$packageName")))
+            }
+        } else {
+            dialog.setPositiveButton("App settings") { _, _ ->
+                openDisplaySettings(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName")))
+            }
+        }
+        dialog.show()
+    }
+
+    private fun openDisplaySettings(intent: Intent) {
+        try { startActivity(intent) }
+        catch (_: android.content.ActivityNotFoundException) {
+            Toast.makeText(this, "Open this app's notification settings in your phone Settings.", Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun replaceNumberSelection(value: String) {
