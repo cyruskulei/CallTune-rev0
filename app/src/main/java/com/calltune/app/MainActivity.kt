@@ -26,6 +26,8 @@ class MainActivity : Activity() {
     private lateinit var verifiedNumber: TextView
     private lateinit var list: TextView
     private lateinit var modeBtn: Button
+    private lateinit var modeDescription: TextView
+    private lateinit var favouriteTuneBtn: Button
     private lateinit var callerBtn: Button
     private lateinit var sendCodeBtn: Button
     private lateinit var verifyBtn: Button
@@ -108,12 +110,17 @@ class MainActivity : Activity() {
         updateAuthDisplay()
 
         root.addView(TextView(this).apply {
-            text = "\nChoose your incoming-call tune:"
+            text = getString(R.string.own_tune_heading)
             textSize = 18f
         })
 
+        root.addView(Button(this).apply {
+            text = getString(R.string.choose_own_tune)
+            setOnClickListener { pickAudio(2) }
+        })
+
         callerNumberBox = EditText(this).apply {
-            hint = "Caller number (optional)"
+            hint = getString(R.string.favourite_caller_hint)
             inputType = android.text.InputType.TYPE_CLASS_PHONE
             setText(
                 getSharedPreferences("tune_input", MODE_PRIVATE)
@@ -122,16 +129,21 @@ class MainActivity : Activity() {
         }
         root.addView(callerNumberBox)
 
-        root.addView(Button(this).apply {
-            text = "Tune for a caller (this phone)"
+        favouriteTuneBtn = Button(this).apply {
+            text = getString(R.string.assign_caller_tune)
             setOnClickListener {
+                if (callerNumberBox.text.none { it.isDigit() }) {
+                    Toast.makeText(this@MainActivity, R.string.enter_favourite_caller, Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
                 getSharedPreferences("tune_input", MODE_PRIVATE)
                     .edit()
                     .putString("caller_number", callerNumberBox.text.toString())
                     .apply()
                 pickAudio(1)
             }
-        })
+        }
+        root.addView(favouriteTuneBtn)
 
         root.addView(TextView(this).apply {
             text = "\nYour cloud tune:"
@@ -177,13 +189,15 @@ class MainActivity : Activity() {
         modeBtn = Button(this).apply {
             setOnClickListener {
                 val sp = getSharedPreferences("settings", MODE_PRIVATE)
-                val next =
-                    if (sp.getString("mode", "free") == "free") "pro" else "free"
-                sp.edit().putString("mode", next).apply()
+                val next = CallTuneMode.fromSetting(sp.getString("mode", "free")).next()
+                sp.edit().putString("mode", next.setting).apply()
                 updateModeText()
+                updateCallerText()
             }
         }
         root.addView(modeBtn)
+        modeDescription = TextView(this)
+        root.addView(modeDescription)
         updateModeText()
 
         callerBtn = Button(this).apply {
@@ -454,7 +468,7 @@ class MainActivity : Activity() {
         val uri = data?.data
 
         if (res != RESULT_OK || uri == null) {
-            if (req == 11 || req == 13) {
+            if (req in 11..13) {
                 Toast.makeText(
                     this,
                     "No trimmed tune came back (code $res)",
@@ -466,6 +480,8 @@ class MainActivity : Activity() {
 
         when (req) {
             1 -> trim(uri, 11)
+
+            2 -> trim(uri, 12)
 
             3 -> trim(uri, 13)
 
@@ -484,6 +500,12 @@ class MainActivity : Activity() {
                 ).show()
             }
 
+            12 -> {
+                TuneStore.save(this, "", uri)
+                refresh()
+                Toast.makeText(this, R.string.own_tune_saved, Toast.LENGTH_LONG).show()
+            }
+
             13 -> {
                 Toast.makeText(
                     this,
@@ -495,28 +517,37 @@ class MainActivity : Activity() {
     }
 
     private fun updateCallerText() {
-        val on = getSharedPreferences("settings", MODE_PRIVATE)
-            .getBoolean("caller_hears", true)
-
-        callerBtn.text =
-            if (on) "When I call: I hear the receiver's tune (ON). Tap to switch"
-            else "When I call: I hear the receiver's tune (OFF). Tap to switch"
+        val sp = getSharedPreferences("settings", MODE_PRIVATE)
+        val mode = CallTuneMode.fromSetting(sp.getString("mode", "free"))
+        val choice = TunePolicy.outgoing(mode, sp.getBoolean("caller_hears", true))
+        callerBtn.text = getString(when (choice) {
+            TunePolicy.Outgoing.OWN -> R.string.outgoing_own_on
+            TunePolicy.Outgoing.RECEIVER -> R.string.outgoing_receiver_on
+            TunePolicy.Outgoing.OFF -> if (mode == CallTuneMode.FREE)
+                R.string.outgoing_own_off else R.string.outgoing_receiver_off
+        })
     }
 
     private fun updateModeText() {
-        val free = getSharedPreferences("settings", MODE_PRIVATE)
-            .getString("mode", "free") == "free"
-
-        modeBtn.text =
-            if (free) "Mode: FREE (plays my own tune). Tap to switch"
-            else "Mode: PRO (incoming caller tune). Tap to switch"
+        val mode = CallTuneMode.fromSetting(getSharedPreferences("settings", MODE_PRIVATE)
+            .getString("mode", "free"))
+        modeBtn.text = getString(when (mode) {
+            CallTuneMode.FREE -> R.string.mode_free
+            CallTuneMode.PRO -> R.string.mode_pro
+            CallTuneMode.PRO_PLUS -> R.string.mode_pro_plus
+        })
+        modeDescription.text = getString(when (mode) {
+            CallTuneMode.FREE -> R.string.theme_free
+            CallTuneMode.PRO -> R.string.theme_pro
+            CallTuneMode.PRO_PLUS -> R.string.theme_pro_plus
+        })
+        val assignmentsEnabled = mode == CallTuneMode.PRO_PLUS
+        callerNumberBox.isEnabled = assignmentsEnabled
+        favouriteTuneBtn.isEnabled = assignmentsEnabled
     }
 
     private fun testPlay() {
         val uri = TuneStore.findDefault(this)
-            ?: TuneStore.all(this).values.firstOrNull()?.let {
-                Uri.parse(it)
-            }
 
         if (uri == null) {
             Toast.makeText(

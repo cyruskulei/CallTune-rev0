@@ -7,3 +7,5 @@ kotlinc app/src/main/java/com/calltune/app/OutgoingTuneGate.kt tests/OutgoingTun
 kotlin -cp "$classes" OutgoingTuneGateTestKt
 kotlinc app/src/main/java/com/calltune/app/IncomingTuneSession.kt tests/IncomingTuneSessionTest.kt -d "$classes"
 kotlin -cp "$classes" IncomingTuneSessionTestKt
+kotlinc app/src/main/java/com/calltune/app/CallTuneMode.kt tests/TunePolicyTest.kt -d "$classes"
+kotlin -cp "$classes" TunePolicyTestKt

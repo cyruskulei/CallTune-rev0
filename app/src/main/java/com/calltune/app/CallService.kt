@@ -38,15 +38,10 @@ class CallService : Service() {
         if (action == OutgoingTuneGate.Action.STOP) {
             stopOutgoing(if (connected) "Telecom connected" else "Telecom no dialing call")
         } else if (action == OutgoingTuneGate.Action.START && candidate != null) {
-            if (getSharedPreferences("settings", MODE_PRIVATE).getBoolean("caller_hears", true)) {
+            if (outgoingChoice() != TunePolicy.Outgoing.OFF) {
                 val handle = candidate.details?.handle
-                val tm = getSystemService(android.telephony.TelephonyManager::class.java)
                 val number = handle?.schemeSpecificPart
-                val emergency = try {
-                    if (Build.VERSION.SDK_INT >= 29 && number != null) tm.isEmergencyNumber(number)
-                    else android.telephony.PhoneNumberUtils.isEmergencyNumber(number.orEmpty())
-                } catch (_: Exception) { true }
-                if (!emergency && handle?.scheme == "tel" && !number.isNullOrBlank()) {
+                if (handle?.scheme == "tel" && !number.isNullOrBlank()) {
                     dialAt = System.currentTimeMillis()
                     sawActive = false
                     startOutgoing(this, number)
@@ -68,7 +63,7 @@ class CallService : Service() {
 
     private val autoStop = Runnable { stopIncoming() }
 
-    // --- Outgoing calls: the caller hears the receiver's tune on the caller's own phone ---
+    // Outgoing audio always plays locally: own tune in Free, receiver tune in Pro/Pro Plus.
     private var outPlayer: MediaPlayer? = null
     @Volatile private var outgoing = false
     // FIX: the phone can still report IDLE for a moment after dialling starts (seen on the Samsung: IDLE at +831 ms).
@@ -122,8 +117,9 @@ class CallService : Service() {
 
     private val outReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            if (!enabled()) return
             if (getSystemService(android.telecom.TelecomManager::class.java).defaultDialerPackage == packageName) return
-            if (!getSharedPreferences("settings", MODE_PRIVATE).getBoolean("caller_hears", true)) return
+            if (outgoingChoice() == TunePolicy.Outgoing.OFF) return
             @Suppress("DEPRECATION")
             val number = intent.getStringExtra(Intent.EXTRA_PHONE_NUMBER) ?: resultData
             if (number.isNullOrBlank()) { note("out_log", "outgoing call, number not provided"); return }
@@ -136,10 +132,33 @@ class CallService : Service() {
         }
     }
 
+    private fun mode(): CallTuneMode = CallTuneMode.fromSetting(
+        getSharedPreferences("settings", MODE_PRIVATE).getString("mode", "free"))
+
+    private fun outgoingChoice(): TunePolicy.Outgoing = TunePolicy.outgoing(mode(),
+        getSharedPreferences("settings", MODE_PRIVATE).getBoolean("caller_hears", true))
+
+    private fun ownTune(ctx: Context): Uri = TuneStore.findDefault(ctx)
+        ?: Uri.parse("android.resource://$packageName/${R.raw.default_tune}")
+
+    private fun isEmergency(number: String): Boolean = try {
+        if (Build.VERSION.SDK_INT >= 29)
+            getSystemService(TelephonyManager::class.java).isEmergencyNumber(number)
+        else android.telephony.PhoneNumberUtils.isEmergencyNumber(number)
+    } catch (_: Exception) { true }
+
     private fun startOutgoing(ctx: Context, number: String) {
         stopOutgoing("restart")
+        // Both Telecom and the legacy event path must leave emergency calls alone.
+        if (!enabled() || isEmergency(number)) return
+        val choice = outgoingChoice()
+        if (choice == TunePolicy.Outgoing.OFF) return
         outgoing = true
         val generation = outgoingGate.token()
+        if (choice == TunePolicy.Outgoing.OWN) {
+            playOutgoing(ownTune(ctx), "playing my own tune on this phone", true)
+            return // Free playback never looks up the other person's cloud tune.
+        }
         val cached = Cloud.cachedFile(ctx, number)
         if (cached != null) {
             playOutgoing(Uri.fromFile(cached))
@@ -150,17 +169,25 @@ class CallService : Service() {
             val f = Cloud.fetch(ctx, number)
             main.post {
                 if (enabled() && outgoing && outgoingGate.isCurrent(generation) && f != null) playOutgoing(Uri.fromFile(f))
-                else if (outgoing && outgoingGate.isCurrent(generation)) note("out_log", "no tune found for $number")
+                else if (outgoing && outgoingGate.isCurrent(generation)) note("out_log", "receiver tune unavailable; no custom outgoing audio")
             }
         }.start()
     }
 
-    private fun playOutgoing(uri: Uri) {
+    private fun playOutgoing(uri: Uri, description: String = "playing receiver tune on this phone",
+                             allowOwnFallback: Boolean = false) {
         if (!enabled() || !outgoing) return
         val token = outgoingGate.token()
         outPlayer?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
         val media = MediaPlayer()
         outPlayer = media
+        fun recover() {
+            if (outPlayer !== media) return
+            if (allowOwnFallback && enabled() && outgoing && outgoingGate.isCurrent(token))
+                playOutgoing(Uri.parse("android.resource://$packageName/${R.raw.default_tune}"),
+                    "playing built-in fallback on this phone")
+            else stopOutgoing("player failed")
+        }
         try {
             media.setAudioAttributes(AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
@@ -171,7 +198,7 @@ class CallService : Service() {
                 if (outPlayer !== media || !enabled() || !outgoing || !outgoingGate.isCurrent(token)) return@setOnPreparedListener
                 try {
                     media.start()
-                    note("out_log", "playing receiver tune on this phone")
+                    note("out_log", description)
                     trace("started, state=${callStateName()}")
                     main.removeCallbacks(outStop)
                     main.postDelayed(outStop, 20_000)
@@ -179,18 +206,18 @@ class CallService : Service() {
                     main.postDelayed(outWatch, 500)
                 } catch (e: Exception) {
                     note("out_log", "start failed: ${e.javaClass.simpleName}")
-                    stopOutgoing("player failed")
+                    recover()
                 }
             }
             media.setOnErrorListener { _, what, extra ->
                 note("out_log", "player error: $what/$extra")
-                if (outPlayer === media) stopOutgoing("player failed")
+                recover()
                 true
             }
             media.prepareAsync()
         } catch (e: Exception) {
             note("out_log", "prepare failed: ${e.javaClass.simpleName}")
-            stopOutgoing("player failed")
+            recover()
         }
     }
 
@@ -254,25 +281,18 @@ class CallService : Service() {
         if (!enabled()) return
         val id = incomingSession.token()
         note("ring_log", "incoming ring; number available=${!number.isNullOrBlank()}")
-        val specific = number?.takeIf { it.isNotBlank() }?.let { TuneStore.findSpecific(ctx, it) }
-        val fallback = TuneStore.findDefault(ctx)
-            ?: Uri.parse("android.resource://$packageName/${R.raw.default_tune}")
-        val mode = getSharedPreferences("settings", MODE_PRIVATE).getString("mode", "free")
-        if (specific != null || mode == "free" || number.isNullOrBlank()) {
-            play(specific ?: fallback)
-            return
+        val selectedMode = mode()
+        val specific = if (selectedMode == CallTuneMode.PRO_PLUS)
+            number?.takeIf { it.isNotBlank() }?.let { TuneStore.findSpecific(ctx, it) }
+            else null
+        // The receiver always hears their own local audio. Only Pro Plus uses
+        // caller assignments; no incoming mode downloads the caller's cloud tune.
+        val selected = when (TunePolicy.incoming(selectedMode, specific != null)) {
+            TunePolicy.Incoming.ASSIGNED -> requireNotNull(specific)
+            TunePolicy.Incoming.OWN -> ownTune(ctx)
         }
-        val cached = Cloud.cachedFile(ctx, number)
-        // Ring locally immediately. A cache miss must not make the phone silent while
-        // the network is unavailable. A valid cloud result may replace this fallback
-        // only while the very same incoming call is still ringing.
-        play(cached?.let { Uri.fromFile(it) } ?: fallback)
-        Thread {
-            val file = Cloud.fetch(ctx, number)
-            if (cached == null && file != null) main.post {
-                if (mayPlay(id)) play(Uri.fromFile(file))
-            }
-        }.start()
+        note("ring_log", "incoming ring; mode=${selectedMode.setting}; assigned=${specific != null}; number available=${!number.isNullOrBlank()}")
+        if (mayPlay(id)) play(selected)
     }
 
     override fun onCreate() {

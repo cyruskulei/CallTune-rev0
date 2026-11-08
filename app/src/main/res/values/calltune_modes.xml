@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="own_tune_heading">\nYour own CallTune:</string>
+    <string name="choose_own_tune">Choose my CallTune (this phone)</string>
+    <string name="own_tune_saved">Your own CallTune is saved on this phone.</string>
+    <string name="favourite_caller_hint">Favourite caller number (Pro Plus)</string>
+    <string name="assign_caller_tune">Assign a personal tune (Pro Plus, this phone)</string>
+    <string name="enter_favourite_caller">Enter your favourite caller’s phone number first.</string>
+    <string name="mode_free">Mode: FREE. Tap to switch to Pro</string>
+    <string name="mode_pro">Mode: PRO. Tap to switch to Pro Plus</string>
+    <string name="mode_pro_plus">Mode: PRO PLUS. Tap to switch to Free</string>
+    <string name="theme_free">Enjoy your CallTune while you wait for your call to be answered.\n\nHear your own tune on incoming calls and, with outgoing playback ON, while making calls.</string>
+    <string name="theme_pro">The receiver’s tune, a shared experience.\n\nThe caller enjoys the receiver’s CallTune while the receiver hears their own CallTune. Hearing the receiver’s tune requires outgoing playback ON and their shared tune to be available.</string>
+    <string name="theme_pro_plus">A special tune for your favourite people.\n\nLet callers enjoy your shared CallTune while you recognise your favourite callers by the personal tunes you assign to them. Without an assignment, you hear your own usual tune. Hearing the receiver’s shared tune requires outgoing playback ON and their shared tune to be available.</string>
+    <string name="outgoing_own_on">When I call: play my own tune (ON). Tap to switch</string>
+    <string name="outgoing_own_off">When I call: play my own tune (OFF). Tap to switch</string>
+    <string name="outgoing_receiver_on">When I call: play the receiver’s tune (ON). Tap to switch</string>
+    <string name="outgoing_receiver_off">When I call: play the receiver’s tune (OFF). Tap to switch</string>
+</resources>
