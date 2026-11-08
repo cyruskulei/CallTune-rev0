@@ -36,13 +36,9 @@ class DialerActivity : Activity() {
             inputType = android.text.InputType.TYPE_CLASS_PHONE
             setText(state?.getString("number") ?: intent.data?.schemeSpecificPart.orEmpty())
         }
-        root.addView(number)
         root.addView(LinearLayout(this).apply {
-            addView(Button(this@DialerActivity).apply {
-                text = "+"
-                contentDescription = "Insert plus for international number"
-                setOnClickListener { replaceNumberSelection("+") }
-            }, LinearLayout.LayoutParams(0, -2, 1f))
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            addView(number, LinearLayout.LayoutParams(0, -2, 1f))
             addView(Button(this@DialerActivity).apply {
                 text = "Delete"
                 isAllCaps = false
@@ -52,7 +48,7 @@ class DialerActivity : Activity() {
                     number.text.clear()
                     true
                 }
-            }, LinearLayout.LayoutParams(0, -2, 2f))
+            }, LinearLayout.LayoutParams(-2, -2))
         })
         for (row in listOf("123", "456", "789", "*0#")) {
             root.addView(LinearLayout(this).apply {
