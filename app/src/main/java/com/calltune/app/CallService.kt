@@ -190,7 +190,8 @@ class CallService : Service() {
         }
         try {
             media.setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                // Experiment 1: isolate outgoing music usage; do not change call volume.
+                .setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
             media.setDataSource(this, uri)
             media.isLooping = true
@@ -199,7 +200,7 @@ class CallService : Service() {
                 try {
                     media.start()
                     note("out_log", description)
-                    trace("started, state=${callStateName()}")
+                    trace("media experiment 1; usage=MEDIA; started, state=${callStateName()}")
                     main.removeCallbacks(outStop)
                     main.postDelayed(outStop, 20_000)
                     main.removeCallbacks(outWatch)
