@@ -11,9 +11,11 @@ import android.view.WindowManager
 import android.widget.*
 
 class InCallActivity : Activity() {
+    private var displayedCall = false
     private val refresh: () -> Unit = { render() }
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        displayedCall = state?.getBoolean("displayed_call", false) ?: false
         if (Build.VERSION.SDK_INT >= 27) { setShowWhenLocked(true); setTurnScreenOn(true) }
         else window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON)
     }
@@ -24,9 +26,19 @@ class InCallActivity : Activity() {
         super.onStop()
     }
 
+    override fun onSaveInstanceState(state: Bundle) {
+        state.putBoolean("displayed_call", displayedCall)
+        super.onSaveInstanceState(state)
+    }
+
     private fun render() {
         val service = RinomInCallService.current
         val calls = service?.calls.orEmpty().filter { it.state != Call.STATE_DISCONNECTED }
+        if (calls.isEmpty() && displayedCall) {
+            finish()
+            return
+        }
+        if (calls.isNotEmpty()) displayedCall = true
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 32, 24, 24) }
         fun button(label: String, action: () -> Unit) {
             root.addView(Button(this).apply { text = label; isAllCaps = false; setOnClickListener { action() } })

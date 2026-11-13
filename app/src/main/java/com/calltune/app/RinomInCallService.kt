@@ -146,18 +146,22 @@ class RinomInCallService : InCallService() {
                         .setSmallIcon(android.R.drawable.ic_menu_call).setContentTitle(title).build())
                     .setOngoing(true).setContentIntent(open).setOnlyAlertOnce(!newRing)
                 val end = actionIntent(call, if (ringing) "reject" else "end")
-                if (Build.VERSION.SDK_INT >= 31) {
+                val fullScreen = ringing &&
+                    (Build.VERSION.SDK_INT < 34 || nm.canUseFullScreenIntent())
+                // A native CallStyle posted outside a foreground service needs a
+                // full-screen intent. Use ordinary controls for other call states
+                // and when full-screen permission is unavailable.
+                if (Build.VERSION.SDK_INT >= 31 && fullScreen) {
                     val person = Person.Builder().setName("Caller").setImportant(true).build()
-                    notification.setStyle(if (ringing)
-                        Notification.CallStyle.forIncomingCall(person, end, actionIntent(call, "answer"))
-                        else Notification.CallStyle.forOngoingCall(person, end))
+                    notification.setStyle(
+                        Notification.CallStyle.forIncomingCall(person, end, actionIntent(call, "answer")))
                 } else {
                     if (ringing) notification.addAction(Notification.Action.Builder(
                         null, "Answer", actionIntent(call, "answer")).build())
                     notification.addAction(Notification.Action.Builder(
                         null, if (ringing) "Reject" else "End call", end).build())
                 }
-                if (ringing && (Build.VERSION.SDK_INT < 34 || nm.canUseFullScreenIntent()))
+                if (fullScreen)
                     notification.setFullScreenIntent(open, true)
                 try {
                     nm.notify(NOTIFICATION_ID, notification.build())
