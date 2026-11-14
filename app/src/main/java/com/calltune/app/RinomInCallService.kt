@@ -22,6 +22,7 @@ class RinomInCallService : InCallService() {
     private val main = Handler(Looper.getMainLooper())
     private var shownRingingCall: Call? = null
     private var playbackStartRequested = false
+    private val silencedRingingCalls = mutableSetOf<Call>()
 
     companion object {
         var current: RinomInCallService? = null
@@ -99,8 +100,20 @@ class RinomInCallService : InCallService() {
     override fun onCallRemoved(call: Call) {
         callbacks.remove(call)?.let { call.unregisterCallback(it) }
         callTokens.remove(call)
+        silencedRingingCalls.remove(call)
         super.onCallRemoved(call)
         update()
+    }
+
+    fun isRingerSilenced(call: Call): Boolean = call in silencedRingingCalls
+
+    override fun onSilenceRinger() {
+        super.onSilenceRinger()
+        val ringing = callbacks.keys.filter { it.state == Call.STATE_RINGING }
+        if (ringing.isEmpty()) return
+        silencedRingingCalls.addAll(ringing)
+        CallService.instance?.silenceIncomingTune()
+        record("System silence-ringer request handled")
     }
 
     override fun onCallAudioStateChanged(audioState: CallAudioState) {
@@ -248,6 +261,7 @@ class RinomInCallService : InCallService() {
         callbacks.forEach { (call, callback) -> call.unregisterCallback(callback) }
         callbacks.clear()
         callTokens.clear()
+        silencedRingingCalls.clear()
         try { CallService.instance?.onTelecomCallsChanged(emptyList()) }
         catch (e: Exception) { record("Tune cleanup failed: ${e.javaClass.simpleName}") }
         if (current === this) current = null

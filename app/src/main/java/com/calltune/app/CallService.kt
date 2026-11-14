@@ -53,7 +53,9 @@ class CallService : Service() {
             stopIncoming()
         } else {
             val number = ringing.details?.handle?.schemeSpecificPart
-            if (incomingSession.select(ringing, number)) handleRing(this, number)
+            val changed = incomingSession.select(ringing, number)
+            if (RinomInCallService.current?.isRingerSilenced(ringing) == true) silenceIncomingTune()
+            else if (changed) handleRing(this, number)
         }
     }
 
@@ -231,6 +233,12 @@ class CallService : Service() {
         outPlayer?.let { try { it.stop() } catch (_: Exception) {}; it.release() }
         outPlayer = null
     }
+    fun silenceIncomingTune() {
+        incomingSession.silence() // Reject late preparation and late-number restarts for this call.
+        stop()
+        note("ringer_log", "incoming tune silenced by system request")
+    }
+
     private fun stopIncoming() {
         incomingSession.invalidate()
         stop()

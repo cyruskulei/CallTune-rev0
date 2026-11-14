@@ -21,5 +21,21 @@ fun main() {
     check(session.select(first, "456") && !session.isCurrent(replacement)) { "replacement ringing call must invalidate old work" }
     session.invalidate()
     check(!session.isCurrent(session.token())) { "no selection may play even with latest generation" }
-    println("PASS: 12 incoming session lifecycle checks")
+    check(session.select(first, null)) { "ringing session starts before silencing" }
+    val preparing = session.token()
+    session.silence()
+    check(!session.isCurrent(preparing)) { "silencing cancels pending preparation" }
+    check(!session.isCurrent(session.token())) { "silenced session cannot play using a new token" }
+    check(!session.select(first, "late-number")) { "late caller identity must not undo silence" }
+    check(!session.select(first, null)) { "duplicate Telecom snapshot must not undo silence" }
+    session.silence()
+    check(!session.isCurrent(session.token())) { "repeated silence remains silent" }
+    check(session.select(second, "next")) { "a different ringing call can play" }
+    check(session.isCurrent(session.token())) { "silencing must not leak into next call" }
+    session.silence()
+    session.invalidate()
+    check(session.select(second, "next") && session.isCurrent(session.token())) {
+        "end-of-call cleanup resets silence even if a legacy key is reused"
+    }
+    println("PASS: 21 incoming session lifecycle and silence checks")
 }

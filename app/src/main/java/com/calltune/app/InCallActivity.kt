@@ -1,6 +1,7 @@
 package com.calltune.app
 
 import android.app.Activity
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import android.telecom.Call
@@ -34,6 +35,11 @@ class InCallActivity : Activity() {
     private fun render() {
         val service = RinomInCallService.current
         val calls = service?.calls.orEmpty().filter { it.state != Call.STATE_DISCONNECTED }
+        // Let Android dispatch hardware keys. Never consume Power or Volume events here.
+        volumeControlStream = if (calls.any {
+            it.state == Call.STATE_ACTIVE || it.state == Call.STATE_HOLDING ||
+                it.state == Call.STATE_DIALING || it.state == Call.STATE_CONNECTING
+        }) AudioManager.STREAM_VOICE_CALL else AudioManager.USE_DEFAULT_STREAM_TYPE
         if (calls.isEmpty() && displayedCall) {
             finish()
             return
